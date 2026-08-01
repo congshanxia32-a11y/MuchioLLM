@@ -1,0 +1,13 @@
+{
+  "reply_chance": 0.85,
+  "friend_reply_chance": 0.8,
+  "cooldown": 2.0,
+  "listen_window": 2.5,
+  "idle_seconds": 10.0,
+  "typing_speed": 0.13,
+  "center_jp": 10,
+  "center_en": 8,
+  "poke_chance": 0.35,
+  "world_comment_chance": 0.85,
+  "song_comment_chance": 0.45
+}

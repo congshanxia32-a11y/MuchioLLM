@@ -1,0 +1,14 @@
+# MuchioLLM requirements
+# ASCII only! pip decodes this file with the OS locale (cp932 on JP Windows)
+# when there is no BOM, so non-ASCII comments break `pip install -r`.
+numpy
+PyAudioWPatch
+faster-whisper
+# near-required (works without them, but kanji drop out of the board and the
+# word list in the settings UI is empty; both are small)
+pykakasi
+janome
+
+# optional (setup.bat asks):
+#   speechbrain + torch                     ... speaker id by voice. several GB
+#   nvidia-cublas-cu12 + nvidia-cudnn-cu12  ... GPU speech recognition (NVIDIA)
