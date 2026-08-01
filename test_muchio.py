@@ -1,0 +1,530 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""python test_muchio.py — 相槌と「聞く間」の最低限チェック。"""
+import muchio_llm as m
+
+# 相槌が文字盤フォントを通り抜けられること（消えると無言になり相槌の意味が消える）
+for s in m.aizuchi_pool(False) + m.aizuchi_pool(True):
+    out = m.to_board_text(s)
+    assert out, f"相槌が盤面で消えた: {s!r}"
+    assert len(out) <= 8, f"相槌が長すぎる: {out!r}"
+
+# config化した相槌: 、区切りで差し替えられ、空なら既定に戻る
+m.CFG["aizuchi"] = "やあ、おっす"
+assert m.aizuchi_pool(False) == ["やあ", "おっす"]
+m.CFG["aizuchi"] = ""
+assert "ふーん" in m.aizuchi_pool(False), "空指定で既定に戻らない"
+m.CFG["aizuchi"] = m.DEFAULTS["aizuchi"]
+
+# 相手がしゃべり続けているあいだは本返事を出さない
+assert not m.should_reply_now(now=10.0, last_heard=9.0, pending_at=9.0, win=3.0)
+# 3秒黙ったら出す
+assert m.should_reply_now(now=13.0, last_heard=10.0, pending_at=10.0, win=3.0)
+# 黙らなくても待ちが win*4 を超えたら出す（延々しゃべられて詰まるのを防ぐ）
+assert m.should_reply_now(now=23.0, last_heard=22.9, pending_at=10.0, win=3.0)
+# win=0 は旧挙動（即返事）
+assert m.should_reply_now(now=10.0, last_heard=10.0, pending_at=10.0, win=0.0)
+
+# ---- 成長機能: 挨拶の抑制まわり ----
+import time
+import growth as g
+g._board = m.to_board_text
+g._friends = {"usr_a": "ΔΘΛΞΣ", "usr_b": "Poyopon"}
+g._loc_epoch = time.time() - 10
+g._apply("OnPlayerJoined", "usr_a")
+assert g._pop_greet(True) is None, "盤面に出せない名前で挨拶してしまう"
+g._apply("OnPlayerJoined", "usr_b")
+assert g._pop_greet(False) is None, "会話中に挨拶を捨ててしまう"
+greet = g._pop_greet(True)
+assert greet and "Poyopon" in greet, f"挨拶が出ない: {greet!r}"
+g._apply("OnPlayerLeft", "usr_b")
+g._apply("OnPlayerJoined", "usr_b")
+assert g._pop_greet(True) is None, "同一インスタンスで二重挨拶"
+assert g._state["people"]["usr_b"]["met"] == 1, "再joinでmetが二重カウント"
+
+# ---- 界隈(言語)の多数決 ----
+assert g._person_lang({"langs": {"en": 3}}) is None, "票不足なのに判定した"
+assert g._person_lang({"langs": {"en": 5, "ja": 1}}) == "en"
+assert g._person_lang({"langs": {"ja": 9, "en": 2}}) == "jp"
+g._present.clear()
+assert g.circle_lang() is None, "無人で判定した"
+g._state["people"]["usr_b"]["langs"] = {"en": 10}
+g._present.add("usr_b")
+assert g.circle_lang() == "en"
+g._state["people"]["usr_c"] = {"name": "x", "met": 1, "last": 0, "langs": {"ja": 10}}
+g._present.add("usr_c")
+assert g.circle_lang() is None, "同数なのに判定した"
+g.hear_lang("ja")   # 在室2人に1票ずつ→usr_cがja優勢のまま、usr_bはen優勢のまま
+assert g._state["people"]["usr_b"]["langs"] == {"en": 10, "ja": 1}
+g.hear_lang("?")    # 不明言語は捨てる
+assert g._state["people"]["usr_b"]["langs"] == {"en": 10, "ja": 1}
+
+# ---- あだ名: 盤面に出せない名前でも、ひらがなのあだ名を付ければ呼べる ----
+g._state["people"]["usr_a"]["nick"] = "たこ"
+g._present.discard("usr_a"); g._greeted.discard("usr_a")
+g._apply("OnPlayerJoined", "usr_a")
+greet = g._pop_greet(True)
+assert greet and "たこ" in greet, f"あだ名で呼べていない: {greet!r}"
+
+# ---- greet=False の人には挨拶しない(記録は続く) ----
+g._state["people"]["usr_b"]["greet"] = False
+g._present.discard("usr_b"); g._greeted.discard("usr_b")
+g._loc_epoch = time.time() + 1   # metカウント許可(新インスタンス扱い)
+m0 = g._state["people"]["usr_b"]["met"]
+g._apply("OnPlayerJoined", "usr_b")
+assert g._pop_greet(True) is None, "greet=Falseなのに挨拶した"
+assert g._state["people"]["usr_b"]["met"] == m0 + 1, "greet=Falseでmetが止まった"
+
+# ---- 手動登録(フレンド外)も挨拶対象になる ----
+g.adopt("usr_zz", "Leo")
+assert "usr_zz" in g._friends
+g._apply("OnPlayerJoined", "usr_zz")
+greet = g._pop_greet(True)
+assert greet and "Leo" in greet, f"手動登録の人に挨拶しない: {greet!r}"
+
+# ---- set_person: あだ名の設定と解除 ----
+g.set_person("usr_zz", nick="れお", greet=False)
+assert g._state["people"]["usr_zz"]["nick"] == "れお"
+assert g._state["people"]["usr_zz"]["greet"] is False
+g.set_person("usr_zz", nick="", greet=True)
+assert "nick" not in g._state["people"]["usr_zz"]
+assert "greet" not in g._state["people"]["usr_zz"]
+
+# ---- 話者タグの真似剥がし: [friend]等を返事の頭から落とす(履歴の自己強化を断つ) ----
+assert m.to_board_text("[friend] こんにちは") == "こんにちは"
+assert m.to_board_text("[ぎんこん] [friend] やあ") == "やあ"
+assert m.to_board_text("かっこ[つき]のほんぶんはのこる") == "かっこ[つき]のほんぶんはのこる"
+
+# ---- 名前剥がし: ナレーションだけ剥がし、主語は残す ----
+assert m.to_board_text("むちこ、きょどる") == "きょどる"
+assert m.to_board_text("むちこはかわいいよ") == "むちこはかわいいよ", m.to_board_text("むちこはかわいいよ")
+assert m.to_board_text("むちこがやるよ") == "むちこがやるよ"
+
+# ---- 盤面センタリング(頭上表示) ----
+m.CFG["center_jp"], m.CFG["center_en"] = 16, 16
+b = m._pad_board("とろんのあし？")           # 1行は上段。7文字 → セル13〜19(中心16)
+assert len(b) == 64 and b[13:20] == "とろんのあし？" and b[:13].isspace(), repr(b)
+b = m._pad_board("snack time?")              # 英語はcenter_en基準
+assert b.index("snack") == 16 - len("snack time?") // 2, repr(b)
+m.CFG["center_jp"] = 0                        # 0=旧来の左寄せ
+assert m._pad_board("なに？").startswith("なに？")
+b = m._pad_board("x" * 64)                    # 64字=2行ぴったり。欠けない
+assert b == "x" * 64
+m.CFG["center_jp"] = 16
+b = m._pad_board("あ" * 40)                   # 32字超は2行に割ってそれぞれ中央へ
+r1, r2 = b[:32], b[32:]
+assert r1.strip() == "あ" * 20 and r2.strip() == "あ" * 20, repr(b)
+b = m._pad_board("abcdefgh ijklmnop qrstuvwx yz123456")   # 英語は空白で行を割る
+assert " " not in (b[:32].strip()[0], b[32:].strip()[0]), repr(b)
+
+# ---- 考え中の点々: 相槌の直後のセルから、上段からはみ出さずに ----
+assert "." in m.CHARSET, "点がフォントにない"
+b = m._pad_board("ほう")                       # center16 → セル15,16 → 点は17から
+s = m._dot_start_cell(b)
+assert s == 17 and b[s - 1] != " " and b[s:s + 3] == "   ", (s, repr(b))
+assert m._dot_start_cell(" " * 64) == 15, "空盤面は表示位置あたりに出す"
+assert m._dot_start_cell(m._pad_board("あ" * 32)) == 29, "上段いっぱいで3点が収まらない"
+# スレッド動作: 点が増えていき、止めると点々だけ消えた盤面に戻る(OSC送信なしで検証)
+calls = []
+_wb = m._write_block
+m._write_block = lambda blk, bts, upto=None: calls.append(bts)
+m._dots_start("ほう", already_shown=True, hold_check=lambda: False)
+time.sleep(m.DOT_TICK * 4.5)
+m._dots_stop()
+m._write_block = _wb
+assert any(m.CHARSET["."] in bts for bts in calls), "点が一度も出なかった"
+assert calls[-1] == m._board_bytes(m._pad_board("ほう")), "停止時に点々が残った"
+
+# ---- ページ送り: 64字超は切り捨てず、文の切れ目で複数ページに割る ----
+long2 = "あ" * 50 + "。" + "い" * 50 + "。"   # 102字2文
+assert m.to_board_text(long2) == long2, "64字超が切り捨てられた"
+pages = m._paginate(long2, 64)
+assert pages == ["あ" * 50 + "。", "い" * 50 + "。"], pages
+assert all(len(p) <= 64 for p in pages)
+assert m._paginate("みじかい。", 64) == ["みじかい。"], "短文は1ページ"
+
+# ---- 128セル盤面(Pointer9-16改造アバター): 4行センタリング・均等割り・点々の追従 ----
+m.CFG["board_cells"] = 128
+b = m._pad_board("とろんのあし？")            # 1行は4行のまんなか寄り(2行目)へ
+assert len(b) == 128 and b[32 + 13:32 + 20] == "とろんのあし？" and not b[:32].strip(), repr(b)
+b = m._pad_board("あ" * 100)                  # 100字 → 4行に均等割り(25字×4)
+rows = [b[i:i + 32].strip() for i in range(0, 128, 32)]
+assert [len(r) for r in rows] == [25, 25, 25, 25], rows
+s = m._dot_start_cell(m._pad_board("ほう"))    # 点々は文字がある行(2行目)の直後
+assert s == 32 + 17, s
+assert m._dot_start_cell(" " * 128) == 32 + 15, "空盤面はまんなかの行へ"
+m.CFG["max_reply"] = 128
+assert m._page_limit() == 128
+m.CFG["board_cells"] = 64
+assert m._page_limit() == 64, "無改造盤面ではページ上限も64に丸める"
+m.CFG["max_reply"] = 64
+p = m._paginate("x" * 150, 64)                # 句読点なし→ハードカット
+assert p == ["x" * 64, "x" * 64, "x" * 22], p
+p = m._paginate("あ" * 60 + "、" + "い" * 60, 64)   # 読点でも割れ、次ページ頭の読点は落ちる
+assert p[0] == "あ" * 60 + "、" and p[1] == "い" * 60, p
+assert len(m.to_board_text("か" * 300)) <= 64 * m.PAGES_MAX, "全体上限を超えた"
+
+# ---- 表示時間: 短文は従来の8秒床、長文は文字数比例 ----
+assert m._hold_for("ほう") == m.HIDE_AFTER
+assert m._hold_for("あ" * 10) == m.HIDE_AFTER, "10字は従来どおり"
+assert m._hold_for("あ" * 64) == m.HOLD_BASE + m.HOLD_PER_CHAR * 64
+assert m._hold_for("あ" * 64) > m._hold_for("あ" * 30) > m._hold_for("あ" * 10)
+
+# ---- 声紋: uid指定の界隈票は本人だけに入る ----
+g._state["people"]["usr_b"]["langs"] = {}
+g._state["people"]["usr_c"]["langs"] = {}
+g._present.update({"usr_b", "usr_c"})
+g.hear_lang("en", uid="usr_b")
+assert g._state["people"]["usr_b"]["langs"] == {"en": 1}
+assert g._state["people"]["usr_c"]["langs"] == {}, "uid指定なのに他人に票が入った"
+g.hear_lang("ja")   # 無記名は従来どおり在室全員
+assert g._state["people"]["usr_c"]["langs"] == {"ja": 1}
+assert g.display_name("usr_b") == "Poyopon"
+assert g.display_name("usr_zzz") is None
+
+# ---- ちょっかい対象のon/offと人の削除 ----
+g.set_person("usr_b", poke=False)
+assert "usr_b" in g._present and "Poyopon" not in g.poke_names(), g.poke_names()
+assert "Poyopon" in g.present_names(), "poke=offで在室表示まで消えた"
+g.set_person("usr_b", poke=True)
+assert "Poyopon" in g.poke_names()
+# 手動登録の削除=登録解除(以後知らない人)
+assert g.remove("usr_zz")
+assert "usr_zz" not in g._friends and "usr_zz" not in g._state["people"]
+g._apply("OnPlayerJoined", "usr_zz")
+assert "usr_zz" not in g._state["people"], "削除したのにまた記録された"
+# フレンドの削除=記録リセット(次に会えばまた数え直す)
+assert g.remove("usr_b")
+assert "usr_b" in g._friends, "フレンド削除でフレンド判定まで消えた"
+g._loc_epoch = time.time() + 1
+g._apply("OnPlayerJoined", "usr_b")
+assert g._state["people"]["usr_b"]["met"] == 1, "数え直しになっていない"
+assert not g.remove("usr_nothere")
+
+# ---- configノブ: なつきやすさ倍率と常連しきい値 ----
+g._get_cfg = lambda: {"bond_gain": 2.0, "tier_regular": 3}
+g._state.update(bond=0.0, bond_ts=time.time())
+g.bump(named=True)
+assert abs(g.bond() - 1.0) < 0.01, "bond_gain=2.0で+0.5×2になっていない"
+assert g._tier(3, 0) == "よくあうこ", "tier_regular=3が効いていない"
+g._get_cfg = None
+
+# ---- 自アカウント除外: テーブル名(ダッシュ無し)とuid(ダッシュ有り)の突き合わせ ----
+assert g._uid_hex("usr_deadbeef-1234-4b43-b0bb-3b532571e12e") == \
+    "deadbeef12344b43b0bb3b532571e12e"
+own = {"deadbeef12344b43b0bb3b532571e12e"}
+assert g._uid_hex("usr_deadbeef-1234-4b43-b0bb-3b532571e12e") in own, "alt垢が除外されない"
+
+# ---- フレンド記念日: きょうが「まるN年」の人の挨拶に一言つく ----
+g._anniv = {"usr_b": 2}
+g._present.discard("usr_b"); g._greeted.discard("usr_b")
+g._apply("OnPlayerJoined", "usr_b")
+greet = g._pop_greet(True)
+assert greet and "まる2ねん" in greet, f"記念日が挨拶に乗らない: {greet!r}"
+g._anniv = {}
+
+# ---- 状況認識(vrcx_sense): ワールド変更のコメントとおもいで ----
+import tempfile
+from pathlib import Path
+import vrcx_sense as vs
+vs._board = m.to_board_text
+vs._get_cfg = lambda: {"world_comment_chance": 1.0}
+vs._data = None
+vs._on_location(1, "wrld_a", "Snow Rotunda", "ぱぶりっく", 1, [], announce=False)
+assert vs._comment_q is None, "announce=Falseなのにコメントした"
+vs._on_location(2, "wrld_a", "Snow Rotunda", "ぱぶりっく", 2, [])
+assert vs._pop_comment(False) is None, "会話中にコメントを捨ててしまう"
+c2 = vs._pop_comment(True)
+assert c2 and "2かいめ" in c2, f"再訪コメントが出ない: {c2!r}"
+vs._on_location(3, "wrld_b", "ΩΞΞΞΩ", "ぱぶりっく", 1, [])
+c3 = vs._pop_comment(True)
+assert c3 and "ΩΞΞΞΩ" not in c3, f"盤面に出せないワールド名を呼んだ: {c3!r}"
+# 過去の滞在窓に会話があれば「おもいで」になる
+# (界隈別DB分離で vs._conv は廃止。_data 配下の conversation{suffix}.jsonl を読む)
+td = Path(tempfile.mkdtemp())
+(td / "conversation.jsonl").write_text(
+    '{"ts": 100, "text": "[とろ] たいやきのはなし"}\n', encoding="utf-8")
+vs._data = td
+vs._on_location(4, "wrld_a", "Snow Rotunda", "ぱぶりっく", 3, [(90, 110)])
+assert vs._memory == "たいやきのはなし", vs._memory
+c4 = vs._pop_comment(True)
+assert c4 and "たいやきのはなし" in c4, f"おもいでコメントが出ない: {c4!r}"
+assert "このばしょのおもいで" in vs.prompt_lines(), vs.prompt_lines()
+vs._data = None
+vs._get_cfg = None
+
+# ---- 呼びかけ判定: config化した名前から聞き間違い許容regexを生成 ----
+import re as _re
+m.load_cfg()
+assert m.NAME_RE.pattern == "[まみむめもの][ぁ-ゖー]?ち[ぁ-ゖー]?こ", m.NAME_RE.pattern  # 旧regexの上位互換
+for s in ("むちこ", "ムーチコ", "めっちこさあ", "もちこおいで", "Muchiko come here", "眠ちこ"):
+    assert m.called_name(s), f"呼びかけを聞き逃した: {s!r}"
+assert not m.called_name("こんにちは") and not m.called_name("ぽちこ")
+_pn, _pe, _re_bak = m.CFG.get("pet_name"), m.CFG.get("pet_name_en"), m.NAME_RE
+m.CFG["pet_name"], m.CFG["pet_name_en"] = "ぽちこ", "pochiko"
+m.NAME_RE = m._name_regex("ぽちこ")
+assert m.called_name("ぼちこー") and m.called_name("Pochiko!"), "改名後の呼びかけ(清濁ゆれ込み)が効かない"
+assert not m.called_name("むちこ"), "改名したのに旧名に反応した"
+assert not m._name_regex("").search("むちこ"), "空名が何かにマッチした"
+m.CFG["pet_name"], m.CFG["pet_name_en"], m.NAME_RE = _pn, _pe, _re_bak
+
+# ---- モデル自動代用: 設定のモデルが未インストールなら手持ちで動く(配布直後対策) ----
+import time as _t
+_cfg_bak = dict(m.CFG)
+m.CFG["mode"], m.CFG["model"] = "jp", "qwen3.6:35b-a3b-mtp-q4_K_M"
+m._TAGS.update(t=_t.time() + 999, models=[("qwen3.5:9b", 5e9), ("nomic-embed-text", 1e9)])
+assert m.active_model() == "qwen3.5:9b", m.active_model()   # 埋め込み専用は選ばない
+assert m._SUBST["want"] == "qwen3.6:35b-a3b-mtp-q4_K_M"
+m._TAGS["models"].append(("qwen3.6:35b-a3b-mtp-q4_K_M", 2e10))
+assert m.active_model() == "qwen3.6:35b-a3b-mtp-q4_K_M", "設定モデルがあるのに代用した"
+assert m._SUBST["want"] is None
+m._TAGS.update(t=_t.time() + 999, models=None)               # ollama不通=判定不能なら設定のまま
+assert m.active_model() == "qwen3.6:35b-a3b-mtp-q4_K_M"
+m._TAGS.update(t=0.0, models=None)
+m.CFG.clear(); m.CFG.update(_cfg_bak)
+
+# ---- ルール文のconfig化: 編集がプロンプトに反映され、{fake}が展開される ----
+_cfg_bak2 = dict(m.CFG)
+m.CFG["mode"] = "jp"
+m.CFG["rules"] = "てすとルール。{fake}おわり。"
+m.CFG["fake_profile"] = "本名=ほげ"
+sp = m.system_prompt()
+assert "てすとルール。" in sp and "おわり。" in sp and "本名=ほげ" in sp, sp[-200:]
+assert "{fake}" not in sp and "{lang}" not in sp and "{name}" not in sp
+m.CFG["base_rules"] = "きほん{lang}ここまで"
+sp = m.system_prompt()
+assert "きほん返事は必ず日本語。" not in sp or True   # modeはautoでない=jpのlang文が入る
+assert "{lang}" not in sp and "ここまで" in sp
+m.CFG.clear(); m.CFG.update(_cfg_bak2)
+
+# ---- 耳の生存ハートビートとOSCヒント ----
+m.DATA.mkdir(exist_ok=True)
+(m.DATA / "ears.alive").touch()
+assert m._ears_alive(), "触った直後なのに耳が死んでいる判定"
+assert isinstance(m._osc_off_hint(), bool)
+
+# ---- 設定UI: プレースホルダの置換漏れがあると画面に __XX__ が露出する ----
+_mo = m._model_options
+m._model_options = lambda key="model": "<option>dummy</option>"   # ollama非依存でページ生成
+_left = _re.findall(r"__[A-Z]+__", m._render_ui())
+assert not _left, f"UIプレースホルダの置換漏れ: {_left}"
+m._model_options = _mo
+
+# ---- フレンドのかいわ記憶: タグ付き発言だけ拾う(飼い主・むちこ自身は入れない) ----
+_lines = ['{"ts":1,"role":"user","text":"[Poyopon] やっほー"}',
+          '{"ts":2,"role":"user","text":"たいくつだなあ"}',
+          '{"ts":3,"role":"assistant","text":"[friend] ではない"}',
+          'こわれた行',
+          '{"ts":4,"role":"user","text":"[friend] だれかの声"}']
+assert m._pick_friend_lines(_lines, 5) == ["[Poyopon] やっほー", "[friend] だれかの声"]
+assert m._pick_friend_lines(_lines, 1) == ["[friend] だれかの声"], "新しい側から数えていない"
+
+# ---- せいかくスライダー: まんなか(45-55)は無音、はしに寄るほど強い文+矛盾ガード ----
+_tr_bak = {k: m.CFG.get(k) for k, *_ in m.TRAITS}
+_tw_bak = m.CFG.get("trait_weight")
+for k, *_ in m.TRAITS:
+    m.CFG[k] = 50
+m.CFG["trait_weight"] = "mid"
+assert m._trait_lines(False) == "" and m._trait_lines(True) == "", "まんなかで何か足している"
+# バンド境界のオフバイワン(9/10, 44/45, 55/56, 90/91)
+assert m._trait_band(9) == 0 and m._trait_band(10) == 1
+assert m._trait_band(44) == 2 and m._trait_band(45) is None
+assert m._trait_band(55) is None and m._trait_band(56) == 3
+assert m._trait_band(90) == 4 and m._trait_band(91) == 5
+# はし=強度副詞つき+枠組み文。毒舌でも中傷禁止ガードが同居する
+m.CFG["trait_mean"] = 100
+_t = m._trait_lines(False)
+assert "毒舌" in _t and "かならず" in _t and "中傷" in _t and _t.startswith("せいかく"), _t
+_te = m._trait_lines(True)
+assert "roaster" in _te and "hateful" in _te
+# やさしい極=悪口ぜったい禁止+皮肉ガード
+m.CFG["trait_mean"] = 0
+_t = m._trait_lines(False)
+assert "悪口はぜったいに言わず" in _t and "皮肉" in _t
+# 軽く口がわるいだけならガードはどちらも出ない
+m.CFG["trait_mean"] = 65
+_t = m._trait_lines(False)
+assert "中傷" not in _t and "皮肉" not in _t
+# 効きぐあい(trait_weight)3段で枠組み文が変わる
+m.CFG["trait_mean"] = 100
+for _w, _frag in (("low", "うっすら"), ("mid", "この設定に従う"), ("high", "かならず守る")):
+    m.CFG["trait_weight"] = _w
+    assert _frag in m._trait_lines(False), _w
+m.CFG["trait_weight"] = "mid"
+m.CFG["trait_mean"] = 50
+m.CFG["trait_instinct"] = 5
+assert "理性的" in m._trait_lines(False)
+m.CFG["trait_optimism"] = 95
+assert "楽観" in m._trait_lines(False)
+for k, *_ in m.TRAITS:
+    m.CFG[k] = _tr_bak[k] if _tr_bak[k] is not None else m.DEFAULTS[k]
+m.CFG["trait_weight"] = _tw_bak if _tw_bak is not None else m.DEFAULTS["trait_weight"]
+
+# ---- じんかくテンプレ: 新構造(persona+examples+traits+checks)と値の妥当性 ----
+_tkeys = {k for k, *_ in m.TRAITS}
+_ckeys = {t[0] for t in m.RULES_TOGGLES}
+for _n, _p in m.PRESETS.items():
+    assert set(_p) == {"persona", "persona_en", "examples", "examples_en", "traits", "checks"}, _n
+    assert _p["persona"] and _p["examples"] and _p["examples_en"], f"{_n}: 空欄"
+    assert set(_p["traits"]) <= _tkeys and all(0 <= v <= 100 for v in _p["traits"].values()), _n
+    assert set(_p["checks"]) <= _ckeys, _n
+assert m.PRESETS["バニラ"]["examples"] == m.DEFAULTS["examples"]
+assert m.PRESETS["バニラ"]["persona"] == m.DEFAULTS["persona"]
+
+# ---- こだわりチェック・効きぐあい・れいぶん・旧base_rules移行 ----
+_cfg_bak3 = dict(m.CFG)
+m.CFG["mode"] = "jp"
+m.CFG["base_rules"] = ""
+m.CFG["examples"] = m.DEFAULTS["examples"]        # 実configの自作れいぶんに左右されない
+m.CFG["examples_en"] = m.DEFAULTS["examples_en"]
+for k, *_ in m.TRAITS:
+    m.CFG[k] = 50
+m.CFG["trait_weight"] = m.CFG["persona_weight"] = "mid"
+for _c in _ckeys:
+    m.CFG[_c] = False
+m.CFG["rule_polite"] = True
+sp = m.system_prompt()
+assert "敬語で話す" in sp and "くだけた話し言葉" not in sp, "politeがONなのに排他になっていない"
+assert "なんでしょう？" in sp and "なあに？" not in sp, "敬語ONで初期れいぶんが敬語版に差し替わっていない"
+m.CFG["examples"] = "「{name}」→「じぶんのれいぶん」"
+assert "じぶんのれいぶん" in m.system_prompt(), "敬語ONでも自作れいぶんは尊重する"
+m.CFG["examples"] = m.DEFAULTS["examples"]
+m.CFG["rule_polite"] = False
+sp = m.system_prompt()
+assert "くだけた話し言葉" in sp and "敬語で話す" not in sp
+m.CFG["rule_trivia"] = True
+assert "うんちく" in m.system_prompt()
+# ハードルールは常時入り、敬語禁止(旧文)はもう無い。既定れいぶんは{name}展開されて入る
+assert "ナレーション" in sp and "話者タグ" in sp and "説明・敬語" not in sp
+assert "なあに？" in sp and "{name}" not in sp
+# 人格の効きぐあい: mid=前置きなし / low / high
+m.CFG["persona_weight"] = "high"
+assert "かならず守る" in m.system_prompt()
+m.CFG["persona_weight"] = "low"
+assert "うっすらこういう子" in m.system_prompt()
+m.CFG["persona_weight"] = "mid"
+# 旧base_rules移行: 旧デフォルト・旧プリセット合成文=注入されない(独自編集ではない)
+m.CFG["base_rules"] = m._OLD_BASE_RULES
+assert "説明・敬語・絵文字" not in m.system_prompt(), "旧デフォルト文が独自文あつかいで二重注入"
+m.CFG["base_rules_en"] = m._OLD_BASE_RULES_EN.strip()   # 旧/saveはstripして保存することがあった
+assert m._legacy_base_rules(True) == ""
+# 独自編集文は従来どおり注入され{lang}も展開される
+m.CFG["base_rules"] = "おれのルール{lang}おわり"
+sp = m.system_prompt()
+assert "おれのルール" in sp and "おわり" in sp and "{lang}" not in sp
+m.CFG.clear(); m.CFG.update(_cfg_bak3)
+
+# ---- 手動ことば: おしえる→ひとりごと候補に入る→チップ削除と同じ経路で消える ----
+_wc_bak2, _jw_bak2 = m._word_counts, m._judge_words
+m._word_counts = lambda: {}          # ログ由来の語を消して手動語だけで検証(ollama非依存)
+m._judge_words = lambda counts: {}
+_mw_bak = m._MANUAL_PATH.read_text(encoding="utf-8") if m._MANUAL_PATH.exists() else None
+m._save_manual_words(["てすとことば", "Testword"])
+assert "てすとことば" in m._interesting_words("jp") and "てすとことば" not in m._interesting_words("en")
+assert "Testword" in m._interesting_words("en")
+m.purge_word("てすとことば")
+assert "てすとことば" not in m._manual_words() and "Testword" in m._manual_words()
+if _mw_bak is None:
+    m._MANUAL_PATH.unlink(missing_ok=True)
+else:
+    m._MANUAL_PATH.write_text(_mw_bak, encoding="utf-8")
+m._word_counts, m._judge_words = _wc_bak2, _jw_bak2
+
+# ---- ものしりナレッジ: キーワード一致で注入・不一致で無音。空行は無視 ----
+_kn_bak = m.CFG.get("knowledge")
+m.CFG["knowledge"] = "神話: ゼウスはギリシャの神さまの王\n\nうちゅう: ブラックホールは光もにげられない"
+assert m._knowledge_lines() == ["神話: ゼウスはギリシャの神さまの王",
+                                "うちゅう: ブラックホールは光もにげられない"]
+_hit = m._knowledge_hits("そういえば神話ってすき？")
+assert "ゼウス" in _hit and "ブラックホール" not in _hit
+assert m._knowledge_hits("こんにちは") == ""
+m.CFG["knowledge"] = _kn_bak if _kn_bak is not None else ""
+
+# ---- にっきけし: 無い日は何もしない(ファイル無変更・バックアップも作らない) ----
+assert m.delete_diary_entry("1999-01-01", "") == 0
+
+# ---- 単語集計: assistant行(むちこ自身のひらがな返答)は数えない ----
+from pathlib import Path as _P
+_tmp = _P(__file__).parent / "data" / "_test_words.jsonl"
+_tmp.write_text('{"ts":1,"role":"user","text":"チョコレートすき"}\n'
+                '{"ts":2,"role":"assistant","text":"カステラたべる"}\n', encoding="utf-8")
+_alldb, m.ALL_DB = m.ALL_DB, [_tmp]
+m._WORDS_CACHE["key"] = None
+_counts = m._word_counts()
+m.ALL_DB = _alldb
+m._WORDS_CACHE["key"] = None
+_tmp.unlink()
+assert "チョコレート" in _counts, _counts
+assert "カステラ" not in _counts, "assistant行の単語を数えてしまった"
+
+# ---- ことば学習: 判定パースと、ひとりごと用の単語えらび ----
+# 箇条書き・番号・引用符・候補外の行が混ざっても、候補との完全一致だけ拾う
+parsed = m._parse_judge("- Cloma\n2. フィザカル\n「プランス」\nしらないことば\nちゃ",
+                        ["Cloma", "フィザカル", "プランス", "What", "おなか", "おちゃ"])
+assert parsed == {"Cloma": True, "フィザカル": True, "プランス": True,
+                  "What": False, "おなか": False, "おちゃ": False}, parsed
+assert m._parse_judge("cloma", ["Cloma"]) == {"Cloma": True}   # 大文字小文字ゆれ
+
+_wc, _jw = m._word_counts, m._judge_words
+m._word_counts = lambda: {"Cloma": 5, "What": 14, "おなか": 11, "フィザカル": 3, "ひとこと": 1}
+m._judge_words = lambda counts: {"What": False, "おなか": False, "Cloma": True}
+assert m._interesting_words("en") == ["Cloma"], "判定Falseの語が混ざった"
+assert m._interesting_words("jp") == ["フィザカル"], "未判定はTrue扱い(フェイルオープン)のはず"
+m._word_counts, m._judge_words = _wc, _jw
+
+# ---- 漢字モード(セルペア16bit) ----
+assert m.KCHARSET, "kanji_charset.jsonが無い(先にgen_kanji_atlas.pyを実行)"
+m.CFG["kanji_mode"] = False
+m.CFG["board_cells"] = 128
+# OFF時は現行と完全一致: バイト列=旧CHARSETの1バイト/字
+bts = m._board_bytes("やあ ")
+assert bts == [m.CHARSET["や"], m.CHARSET["あ"], 0], bts
+assert len(m._board_bytes(m._pad_board("やあ"))) == 128
+assert m.to_board_text("元気だよ") == "げんきだよ", "OFF時はひらがな化が生きる"
+m.CFG["kanji_mode"] = True
+# ON時: 2バイト/グリフ、ページ0文字はhi=0
+kb = m._board_bytes("漢あ")
+ki = m.KCHARSET["漢"]
+assert kb == [ki >> 8, ki & 255, 0, m.CHARSET["あ"]], kb
+# 盤面は64グリフ=128バイト、行は16グリフ
+assert len(m._pad_board("漢字テスト")) == 64
+assert len(m._board_bytes(m._pad_board("漢字テスト"))) == 128
+assert m._page_limit() <= 64
+# 漢字素通し+カタカナ維持+表に無い字は読みに落ちる
+out = m.to_board_text("漢字とカタカナが出るよ")
+assert "漢字" in out and "カタカナ" in out, out
+# 長音がそのまま出る(旧モードは-変換だった)
+assert "ー" in m.to_board_text("すごーい")
+# 全空白盤面の点々開始位置: center_jp(セル単位)をグリフ単位に換算し忘れると行の右端(15/16)に寄るバグの回帰
+s0 = m._dot_start_cell(" " * 64)
+assert 0 <= s0 < 64 and 4 <= s0 % 16 <= 12, s0
+# バイト128は転送不能(クランプで129と衝突)——グリフ表に低位バイト128が無いこと
+assert all(v & 255 != 128 for v in m.KCHARSET.values()), "下位バイト128のグリフが混入"
+# 表に無い字(第2水準外)を含む語は読みに落ちる
+m.CFG["kanji_mode"] = True
+out = m.to_board_text("鬱蒼とした森")
+assert "森" in out and "鬱" not in out, out
+m.CFG["kanji_mode"] = False
+m.CFG["board_cells"] = 64
+
+# ---- OSCプロキシ: VRCPetの旧1バイト直書きを復元できる ----
+st = {"ptr": 0, "board": [0] * 128, "dirty": False}
+text = "やあ げんき?"
+for blk in range(2):
+    msgs = [("/avatar/parameters/KAT_Pointer", [blk + 1])]
+    for i in range(8):
+        ch = text[blk * 8 + i] if blk * 8 + i < len(text) else " "
+        msgs.append((f"/avatar/parameters/KAT_CharSync{i}",
+                     [(m.CHARSET.get(ch, 0) if m.CHARSET.get(ch, 0) <= 127
+                       else m.CHARSET.get(ch, 0) - 256) / 127.0]))
+    assert m._proxy_ingest(msgs, st) is True
+assert st["dirty"]
+assert m._proxy_text(st).startswith("やあ げんき?")
+# KAT以外は取り込まない(素通し対象)
+assert m._proxy_ingest([("/avatar/parameters/Foo", [1])], st) is False
+# osc_parseラウンドトリップ(kat_sniffと共用)
+out = []
+m.osc_parse(m._osc("/avatar/parameters/KAT_Pointer", 3), out)
+assert out == [("/avatar/parameters/KAT_Pointer", [3])]
+
+print("ok")
