@@ -103,11 +103,13 @@ function applyBootstrap(d){
   initExternalToggles();
   form.cfg_mtime.value = d.cfg_mtime || '';
   initPresets();
+  updateSetupStatus();
 }
 async function loadBootstrap(){
   try{
     const d = await (await fetch('/bootstrap')).json();
     applyBootstrap(d);
+    maybeStartTour();
   }catch(e){
     toast('設定の初期値を読み込めませんでした', true);
   }
@@ -168,14 +170,209 @@ gb.open = localStorage.getItem('muchio_guide') !== 'closed';
 gb.addEventListener('toggle', ()=>localStorage.setItem('muchio_guide', gb.open ? 'open' : 'closed'));
 
 // ---- シンプル/じんかく/アドバンスド タブ(選んだほうをおぼえる) ----
-function setTab(t){
-  document.body.className = 'tab-' + t;
-  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on', b.dataset.tab===t));
-  localStorage.setItem('muchio_tab', t);
+const SECTION_KEYS = ['start','basic','llm','audio','integrations','maintenance'];
+const LEGACY_SECTION = {s:'start', j:'llm', a:'integrations'};
+function normalizeWorkspaceLayout(){
+  const main = document.querySelector('main.app-layout');
+  const workspace = $('workspace');
+  if(!main || !workspace) return;
+  Array.from(main.children)
+    .filter(el=>el.classList.contains('grid'))
+    .forEach(grid=>workspace.appendChild(grid));
 }
-document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click', ()=>setTab(b.dataset.tab)));
-const t0 = localStorage.getItem('muchio_tab');
-setTab(t0 === 'a' || t0 === 'j' ? t0 : 's');
+function normalizeSections(){
+  const categorySections = {
+    'advanced-rules':'llm','advanced-aizuchi':'llm','advanced-safety':'maintenance',
+    'advanced-growth':'integrations','advanced-sense':'integrations','advanced-listener':'audio',
+    'vrcx':'integrations','memory-words':'integrations'
+  };
+  Object.entries(categorySections).forEach(([key, section])=>{
+    const el = document.querySelector(`[data-category="${key}"]`);
+    if(el){ el.dataset.section = section; el.classList.add('section-page'); }
+  });
+  [['#voices','audio'],['#friends','integrations'],['#memory','integrations'],['#words','integrations'],['#log','maintenance']]
+    .forEach(([selector, section])=>{
+      const el = document.querySelector(selector)?.closest('section');
+      if(el){ el.dataset.section = section; el.classList.add('section-page'); }
+    });
+}
+
+const ONBOARDING_KEY = 'muchio_onboarding_v1';
+const TOUR_STEPS = [
+  {section:'llm', target:'#hardware', title:'まずモデルを準備', body:'GPU・VRAM・RAMを確認して、このPCで無理なく動くモデルを選ぶ。大きすぎるモデルは返答の遅延につながるため、推薦表示を基準にする。'},
+  {section:'basic', target:'#basic-identity input[name="pet_name"]', title:'名前を設定', body:'ペットの名前と飼い主名を入力する。呼びかけの判定と返答の宛先に使うため、VRChatで表示される名前に合わせる。'},
+  {section:'audio', target:'#audio-listener .category-head', title:'音声と表示を確認', body:'音声認識、OSC、文字盤の設定を確認する。ここを飛ばすと、名前を呼んでも返答が届かない可能性がある。'},
+  {section:'start', target:'#start-test', title:'VRChatで返答を確認', body:'保存してVRChatで名前を呼ぶ。文字盤に返答が出たことを確認できたら、このボタンで案内を完了する。'}
+];
+let tourIndex = 0;
+let tourRestoreFocus = null;
+let tourLayoutFrame = 0;
+const TOUR_VIEW_MARGIN = 80;
+function readOnboarding(){
+  try{ return JSON.parse(localStorage.getItem(ONBOARDING_KEY) || '') || {status:'new', step:0}; }
+  catch(_){ return {status:'new', step:0}; }
+}
+function writeOnboarding(status, step=tourIndex){
+  localStorage.setItem(ONBOARDING_KEY, JSON.stringify({status, step}));
+}
+function updateSetupStatus(){
+  const form = $('cfg');
+  if(!form) return;
+  const state = readOnboarding();
+  const done = {
+    model: Boolean(form.model?.value),
+    identity: Boolean(form.pet_name?.value.trim() && form.owner_name?.value.trim()),
+    audio: Boolean(form.advanced_listener_enabled?.checked && form.osc_proxy?.checked),
+    test: state.status === 'complete'
+  };
+  document.querySelectorAll('.setup-step').forEach((step,index)=>{
+    const isDone = done[step.dataset.setup];
+    step.classList.toggle('is-done', isDone);
+    step.setAttribute('aria-label', `${step.querySelector('b')?.textContent || ''}${isDone ? ' 完了' : ' 未完了'}`);
+    const number = step.querySelector('span');
+    if(number) number.textContent = isDone ? '✓' : String(index + 1);
+  });
+}
+function positionTour(target){
+  const focus = $('tour-focus'), card = $('tour-card');
+  if(!focus || !card || $('tour-layer')?.hidden) return;
+  card.style.visibility = 'hidden';
+  const cardWidth = Math.max(240, Math.min(390, window.innerWidth - 32));
+  card.style.width = `${cardWidth}px`;
+  const cardRect = card.getBoundingClientRect();
+  const hasTarget = target && target.getClientRects().length > 0;
+  const r = hasTarget ? target.getBoundingClientRect() : {
+    top:Math.max(16, (window.innerHeight - cardRect.height) / 2 - 70),
+    left:16,width:window.innerWidth-32,height:1,bottom:Math.max(16, (window.innerHeight - cardRect.height) / 2 - 70),right:window.innerWidth-16
+  };
+  const pad = 8;
+  Object.assign(focus.style, {top:`${Math.max(8,r.top-pad)}px`, left:`${Math.max(8,r.left-pad)}px`, width:`${Math.max(24,r.width+pad*2)}px`, height:`${Math.max(24,r.height+pad*2)}px`});
+  const cardHeight = cardRect.height || 180;
+  const below = hasTarget && r.bottom + 18 + cardHeight <= window.innerHeight - 16;
+  const wantedTop = hasTarget && below ? r.bottom + 18 : hasTarget ? r.top - cardHeight - 18 : (window.innerHeight - cardHeight) / 2;
+  const top = Math.min(Math.max(16, wantedTop), Math.max(16, window.innerHeight - cardHeight - 16));
+  const left = Math.min(Math.max(16, hasTarget ? r.left : (window.innerWidth - cardWidth) / 2), Math.max(16, window.innerWidth - cardWidth - 16));
+  Object.assign(card.style, {top:`${top}px`, left:`${left}px`, visibility:'visible'});
+}
+function scheduleTourLayout(){
+  if(tourLayoutFrame || $('tour-layer')?.hidden) return;
+  tourLayoutFrame = requestAnimationFrame(()=>{
+    tourLayoutFrame = 0;
+    const target = document.querySelector(TOUR_STEPS[tourIndex]?.target);
+    const rect = target?.getBoundingClientRect?.();
+    if(target && rect && (rect.top < TOUR_VIEW_MARGIN || rect.bottom > window.innerHeight - TOUR_VIEW_MARGIN)){
+      target.scrollIntoView({block:'center', behavior:'auto'});
+    }
+    positionTour(target);
+  });
+}
+function settleTourTarget(target, stepIndex){
+  if(stepIndex !== tourIndex || $('tour-layer')?.hidden || !target) return;
+  const rect = target.getBoundingClientRect();
+  if(rect.top < TOUR_VIEW_MARGIN || rect.bottom > window.innerHeight - TOUR_VIEW_MARGIN){
+    target.scrollIntoView({block:'center', behavior:'auto'});
+  }
+  requestAnimationFrame(()=>{ if(stepIndex === tourIndex) positionTour(target); });
+}
+function renderTourStep(){
+  const step = TOUR_STEPS[tourIndex];
+  if(!step) return;
+  setSection(step.section);
+  $('tour-progress').textContent = `${tourIndex + 1} / ${TOUR_STEPS.length}`;
+  $('tour-title').textContent = step.title;
+  $('tour-body').textContent = step.body;
+  $('tour-prev').disabled = tourIndex === 0;
+  $('tour-next').textContent = tourIndex === TOUR_STEPS.length - 1 ? '返答を確認した' : '次へ';
+  requestAnimationFrame(()=>{
+    const target = document.querySelector(step.target) || document.querySelector(`[data-section="${step.section}"]`);
+    target?.scrollIntoView({block:'center', behavior:'auto'});
+    requestAnimationFrame(()=>settleTourTarget(target, tourIndex));
+  });
+}
+function startTour(step=0){
+  tourIndex = Math.max(0, Math.min(TOUR_STEPS.length - 1, step));
+  tourRestoreFocus = document.activeElement;
+  writeOnboarding('active', tourIndex);
+  $('tour-layer').hidden = false;
+  document.body.classList.add('tour-active');
+  $('workspace')?.setAttribute('inert','');
+  renderTourStep();
+  $('tour-card').focus();
+}
+function endTour(status){
+  writeOnboarding(status, tourIndex);
+  $('tour-layer').hidden = true;
+  document.body.classList.remove('tour-active');
+  $('workspace')?.removeAttribute('inert');
+  updateSetupStatus();
+  const restore = tourRestoreFocus;
+  tourRestoreFocus = null;
+  if(restore && document.contains(restore)) restore.focus();
+}
+function maybeStartTour(){
+  const state = readOnboarding();
+  if(!localStorage.getItem(ONBOARDING_KEY) || state.status === 'new') requestAnimationFrame(()=>startTour(state.step || 0));
+}
+function initTour(){
+  $('start-tour')?.addEventListener('click', ()=>startTour(0));
+  $('replay-tour')?.addEventListener('click', ()=>startTour(0));
+  $('start-test')?.addEventListener('click', ()=>startTour(3));
+  $('tour-skip')?.addEventListener('click', ()=>endTour('skipped'));
+  $('tour-prev')?.addEventListener('click', ()=>{ if(tourIndex > 0){ tourIndex--; writeOnboarding('active'); renderTourStep(); } });
+  $('tour-next')?.addEventListener('click', ()=>{ if(tourIndex >= TOUR_STEPS.length - 1) endTour('complete'); else { tourIndex++; writeOnboarding('active'); renderTourStep(); } });
+  window.addEventListener('resize', scheduleTourLayout, {passive:true});
+  window.visualViewport?.addEventListener('resize', scheduleTourLayout, {passive:true});
+  document.addEventListener('keydown', e=>{
+    if(!$('tour-layer') || $('tour-layer').hidden) return;
+    if(e.key === 'Escape'){ e.preventDefault(); endTour('skipped'); return; }
+    if(e.key === 'ArrowRight'){ e.preventDefault(); $('tour-next').click(); return; }
+    if(e.key === 'ArrowLeft'){ e.preventDefault(); $('tour-prev').click(); return; }
+    if(e.key === 'Tab'){
+      const focusable = Array.from($('tour-card').querySelectorAll('button:not([disabled])'));
+      const first = focusable[0], last = focusable[focusable.length-1];
+      if(e.shiftKey && document.activeElement === first){ e.preventDefault(); last.focus(); }
+      else if(!e.shiftKey && document.activeElement === last){ e.preventDefault(); first.focus(); }
+    }
+  });
+}
+initTour();
+function setSection(section, {focus=false}={}){
+  if(!SECTION_KEYS.includes(section)) section = 'start';
+  document.body.dataset.section = section;
+  localStorage.setItem('muchio_section', section);
+  document.querySelectorAll('.side-link').forEach(b=>{
+    const active = b.dataset.section === section;
+    b.classList.toggle('on', active);
+    if(active) b.setAttribute('aria-current','page'); else b.removeAttribute('aria-current');
+  });
+  if(focus) document.querySelector(`[data-section="${section}"].section-page`)?.focus?.();
+  closeDrawer();
+}
+function setTheme(theme){
+  theme = theme === 'light' ? 'light' : 'dark';
+  document.body.dataset.theme = theme;
+  localStorage.setItem('muchio_theme', theme);
+  const b = $('theme-toggle');
+  if(b){ b.textContent = theme === 'dark' ? '☼' : '☾'; b.title = theme === 'dark' ? '明るいテーマにする' : '暗いテーマにする'; }
+}
+function setDrawer(open){
+  $('sidebar')?.classList.toggle('open', open);
+  $('nav-backdrop')?.classList.toggle('open', open);
+  $('sidebar-toggle')?.setAttribute('aria-expanded', String(open));
+  document.body.classList.toggle('drawer-open', open);
+}
+function closeDrawer(){ setDrawer(false); }
+document.querySelectorAll('.side-link').forEach(b=>b.addEventListener('click', ()=>setSection(b.dataset.section, {focus:true})));
+document.querySelectorAll('[data-go-section]').forEach(b=>b.addEventListener('click', ()=>setSection(b.dataset.goSection, {focus:true})));
+$('sidebar-toggle')?.addEventListener('click', ()=>setDrawer(!$('sidebar').classList.contains('open')));
+$('nav-backdrop')?.addEventListener('click', closeDrawer);
+$('theme-toggle')?.addEventListener('click', ()=>setTheme(document.body.dataset.theme === 'light' ? 'dark' : 'light'));
+document.addEventListener('keydown', e=>{ if(e.key === 'Escape' && $('sidebar')?.classList.contains('open')) closeDrawer(); });
+normalizeWorkspaceLayout();
+normalizeSections();
+setTheme(localStorage.getItem('muchio_theme') || 'dark');
+const oldSection = localStorage.getItem('muchio_section') || LEGACY_SECTION[localStorage.getItem('muchio_tab')] || 'start';
+setSection(oldSection);
 
 // ---- じんかくテンプレ: スライダー・こだわり・人格・れいぶんに一式を流し込む(保存は「ほぞん」で) ----
 let PRESETS = {};
@@ -234,6 +431,7 @@ cfg.addEventListener('submit', async e=>{
     $('ttl').textContent = cfg.pet_name.value.trim() || $('ttl').textContent;
     $('savebar').classList.remove('on');
     toast('ほぞんしました（数秒で反映されます）');
+    updateSetupStatus();
     loadM();
     loadNgHits();
   }else if(r.status === 409){
@@ -264,7 +462,60 @@ $('resetform').addEventListener('submit', async e=>{
 var F=[], LIM=20;
 const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const ago=t=>!t?'-':(d=>d<1?'きょう':d+'日前')(Math.floor((Date.now()/1000-t)/86400));
+let pullTimer = null;
+function formatGb(n){ return n ? Number(n).toFixed(1) + ' GB' : '不明'; }
+function formatBytesGb(n){ return n ? (Number(n) / 1e9).toFixed(1) + ' GB' : '不明'; }
+function renderHardware(d){
+  const gpu = d.gpu || {};
+  const line = `${esc(gpu.name || 'GPU不明')} / VRAM ${formatGb(gpu.total_gb)} / RAM ${formatGb(d.ram_gb)} / `+
+    `現在のプロンプト調整: ${esc(d.prompt_profile || 'full')}`;
+  document.querySelector('#hardware .hardware-line').textContent = line;
+  const installed = new Set(d.installed || []);
+  const rec = d.recommended;
+  $('model-recommend').innerHTML = (d.catalog || []).map(x=>{
+    const isRec = x.name === rec, has = installed.has(x.name);
+    return `<div class="model-row${isRec?' recommended':''}"><div><b>${esc(x.name)}</b>`+
+      `${isRec?' <span class="model-badge">おすすめ</span>':''}`+
+      `<small>${esc(x.label)} / ${formatBytesGb(x.size)} / ${esc(x.profile)}</small></div>`+
+      (has ? `<button type="button" class="ghost use-model" data-model="${esc(x.name)}">これを使う</button>` :
+        `<button type="button" class="ghost pull-model" data-model="${esc(x.name)}">ダウンロード</button>`)+
+      `</div>`;
+  }).join('') || '<small>推奨一覧を取得できません</small>';
+  document.querySelectorAll('.pull-model').forEach(b=>b.addEventListener('click', ()=>pullModel(b.dataset.model)));
+  document.querySelectorAll('.use-model').forEach(b=>b.addEventListener('click', ()=>useModel(b.dataset.model)));
+}
+function useModel(name){
+  cfg.model.value = name;
+  $('savebar').classList.add('on');
+  toast(name + 'を選びました。「ほぞん」で切り替えます');
+}
+async function pullModel(name){
+  const r = await fetch('/model_pull', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'model='+encodeURIComponent(name)});
+  const d = await r.json().catch(()=>({}));
+  if(!r.ok || !d.ok){ toast(d.error || 'モデルを取得できません', true); return; }
+  toast(name + 'をダウンロードします。完了までこの画面を閉じなくていいです');
+  clearInterval(pullTimer);
+  pullTimer = setInterval(async()=>{
+    const s = await (await fetch('/model_pull_status')).json().catch(()=>({}));
+    const el = $('model-pull-status');
+    el.textContent = s.status === 'done' ? `${s.model} の取得完了` :
+      s.status === 'error' ? (s.error || '取得に失敗しました') : (s.line || '取得中...');
+    if(s.status === 'done' || s.status === 'error'){
+      clearInterval(pullTimer); pullTimer = null;
+      loadHardware();
+      if(s.status === 'done') useModel(s.model);
+    }
+  }, 1500);
+}
+async function loadHardware(){
+  try{ renderHardware(await (await fetch('/hardware')).json()); }catch(_){
+    document.querySelector('#hardware .hardware-line').textContent = 'スペックを取得できませんでした';
+  }
+  updateSetupStatus();
+}
 loadBootstrap();
+loadHardware();
 async function loadF(){
   try{ F = await (await fetch('/friends')).json(); drawF(); }catch(e){}
 }

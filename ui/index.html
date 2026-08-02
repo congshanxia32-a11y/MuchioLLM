@@ -3,16 +3,31 @@
 <title>むちこのせってい</title>
 <link rel="stylesheet" href="/ui/style.css"></head><body>
 <header><div class="hwrap">
+<button type="button" class="icon-button menu-button" id="sidebar-toggle" aria-label="メニューをひらく" aria-expanded="false">☰</button>
 <h1>🍙 <span id="ttl">むちこ</span>のせってい</h1>
 <div id="stat"><small>よみこみ中...</small></div>
+<div class="header-actions"><button type="button" class="ghost" id="replay-tour">案内をもう一度</button><button type="button" class="icon-button" id="theme-toggle" aria-label="明暗テーマを切り替える">☼</button></div>
 </div></header>
-<main>
-<nav class="tabs">
-<button type="button" class="tab" data-tab="s">シンプル</button>
-<button type="button" class="tab" data-tab="j">じんかく</button>
-<button type="button" class="tab" data-tab="a">アドバンスド</button>
+<div class="nav-backdrop" id="nav-backdrop"></div>
+<main class="app-layout">
+<aside class="sidebar" id="sidebar" aria-label="設定カテゴリ">
+<div class="sidebar-title">設定カテゴリ</div>
+<nav class="side-nav" id="side-nav">
+<button type="button" class="side-link" data-section="start"><span class="side-icon">⌂</span><span><b>はじめに</b><small>最初の準備</small></span></button>
+<button type="button" class="side-link" data-section="basic"><span class="side-icon">◈</span><span><b>基本設定</b><small>名前・反応</small></span></button>
+<button type="button" class="side-link" data-section="llm"><span class="side-icon">✦</span><span><b>LLMと人格</b><small>モデル・口調</small></span></button>
+<button type="button" class="side-link" data-section="audio"><span class="side-icon">◉</span><span><b>音声と表示</b><small>耳・文字盤</small></span></button>
+<button type="button" class="side-link" data-section="integrations"><span class="side-icon">◎</span><span><b>連携と記憶</b><small>VRCX・記録</small></span></button>
+<button type="button" class="side-link" data-section="maintenance"><span class="side-icon">⚙</span><span><b>保守とログ</b><small>安全・更新</small></span></button>
 </nav>
-<section class="card wide update-card" aria-labelledby="update-title">
+<div class="sidebar-foot"><small>必要なところだけ開いて設定できます</small></div>
+</aside>
+<div class="workspace" id="workspace">
+<section class="card wide section-page start-overview" data-section="start" id="start-overview">
+<div class="section-hero"><div><span class="eyebrow">SETUP</span><h2>むちこを動かす準備</h2><p>GPUとモデル、名前、音声を順に確認して、VRChatで最初の返答まで進める。</p></div><button type="button" id="start-tour" class="primary-action">案内をはじめる</button></div>
+<div class="setup-status" id="setup-status"><div class="setup-step" data-setup="model"><span>1</span><div><b>モデルを準備</b><small>GPUに合うLLMを選ぶ</small></div><button type="button" class="ghost" data-go-section="llm">開く</button></div><div class="setup-step" data-setup="identity"><span>2</span><div><b>名前を設定</b><small>ペットと飼い主を登録</small></div><button type="button" class="ghost" data-go-section="basic">開く</button></div><div class="setup-step" data-setup="audio"><span>3</span><div><b>音声と表示を確認</b><small>耳・OSC・文字盤</small></div><button type="button" class="ghost" data-go-section="audio">開く</button></div><div class="setup-step" data-setup="test"><span>4</span><div><b>VRChatで試す</b><small>名前を呼んで返答を確認</small></div><button type="button" id="start-test" class="ghost">確認</button></div></div>
+</section>
+<section class="card wide update-card" data-section="maintenance" aria-labelledby="update-title">
 <div class="update-copy">
 <h2 id="update-title">アップデート</h2>
 <div class="update-state" id="update-state">更新情報を確認できます</div>
@@ -22,7 +37,7 @@
 <button type="button" id="run-update" disabled>アップデート</button>
 </div>
 </section>
-<section class="card wide prompt-card" aria-labelledby="prompt-title">
+<section class="card wide prompt-card" data-section="llm" aria-labelledby="prompt-title">
 <div id="promptbox">
 <div class="prompt-head"><b id="prompt-title">いまLLMに渡る設定・状況プロンプト</b><small>設定を保存すると、ここも数秒で更新されます</small></div>
 <div class="prompt-impact">
@@ -40,12 +55,14 @@
 <input type="hidden" name="cfg_mtime" value="">
 <div class="grid">
 
-<section class="card wide ts" id="guide"><details id="guidebox">
+<section class="card wide section-page" data-section="start" id="guide"><details id="guidebox">
 <summary><b>🔰 はじめてガイド</b> <small>(クリックでひらく/とじる。とじた状態はおぼえます)</small></summary>
 <ol>
 <li><b>なまえ</b>カードで、ペットのなまえ(かな/ローマ字)と あなたのVRChat表示名を入れて「ほぞん」</li>
-<li><b>あたま(LLM)</b>カードで、いま入っているモデルを選ぶ。⚠が付くものはこのPCには大きすぎます。
-小さいモデルはコマンドで <code>ollama pull qwen3:4b</code> などを実行すると増えます</li>
+<li><b>あたま(LLM)</b>カードを開くと、このPCのGPU・VRAM・RAMを自動で調べておすすめを表示します。
+「ダウンロード」でOllamaへ取得し、終わったら「これを使う」→下の「ほぞん」</li>
+<li>モデルの大きさはVRAMを優先して選びます。大きすぎるモデルはRAMへあふれて遅くなるので、⚠が付くものは避けます。
+モデルを変えると、LLMへ渡す状況情報の量も自動で調整されます</li>
 <li>せいかく・口調を変えたいときは<b>じんかく</b>タブへ(どこを直せば何が変わるかの説明もそこにあります)</li>
 <li>設定のモデルが入っていないときは、手持ちのモデルを自動で代用します(上の状態表示に⚠が出ます)</li>
 <li>VRChatに入って名前を呼ぶ → 頭上の文字盤に返事が出たら成功。
@@ -53,7 +70,7 @@
 </ol>
 </details></section>
 
-<section class="card ts"><h2>なまえ</h2>
+<section class="card section-page" data-section="basic" id="basic-identity"><h2>なまえ</h2>
 <p class="desc">ペットとあなたのなまえ。よびかけ判定とおしゃべりに使います</p>
 <div class="field"><label>ペットのなまえ(かな)</label>
 <input type="text" name="pet_name" value="" maxlength="16">
@@ -66,7 +83,7 @@
 <small>あなたのVRChat表示名。だれが飼い主かをペットに教えます</small></div>
 </section>
 
-<section class="card wide ts"><h2>基本説明(LLMに見せる)</h2>
+<section class="card wide section-page" data-section="basic"><h2>基本説明(LLMに見せる)</h2>
 <p class="desc">ペットの立ち位置や、フレンド発言の見分け方。ここは自由に書き換えられます。</p>
 <label class="check"><input type="checkbox" name="core_prompt_enabled"> 基本説明をLLMに渡す</label>
 <div class="field"><label>日本語</label>
@@ -80,7 +97,7 @@
 <textarea name="core_friend_intro_en" rows="2"></textarea></div>
 </section>
 
-<section class="card ts"><h2>おしゃべり</h2>
+<section class="card section-page" data-section="basic"><h2>おしゃべり</h2>
 <p class="desc">どのくらいの頻度・長さでしゃべるか。自発話や割り込みもここで設定します</p>
 <div class="field"><div class="lr"><label>あなたへの反応率</label><output>%</output></div>
 <input type="range" name="reply_chance" min="0" max="100" step="5" value="">
@@ -104,6 +121,9 @@
 <small>発言のまえに、ちかくのフレンドのさいきんの発言を読みこむ数。0=しない</small></div>
 <div class="field"><div class="lr"><label>返事の長さ上限(文字)</label>
 <input type="number" name="max_reply" min="10" max="128" step="1" value=""></div>
+</section>
+
+<section class="card section-page" data-section="audio" id="display-settings"><h2>文字盤と表示</h2>
 <small>盤面1ページの文字数。上限は盤面セル数まで</small></div>
 <div class="field"><div class="lr"><label>盤面セル数</label>
 <select name="board_cells"><option value="64">64 (32×2行・標準)</option>
@@ -122,8 +142,13 @@
 <small>フォントの見た目幅が違うので別に調整できます</small></div>
 </section>
 
-<section class="card ts"><h2>あたま(LLM)</h2>
+<section class="card section-page" data-section="llm" id="llm-settings"><h2>あたま(LLM)</h2>
 <p class="desc">かんがえるモデルとことばの切り替え</p>
+<div class="hardware-box" id="hardware">
+<b>このPCに合うモデル</b><small class="hardware-line">スペックを調べています...</small>
+<div class="model-recommend" id="model-recommend"></div>
+<div class="model-pull-status" id="model-pull-status"></div>
+</div>
 <div class="field"><label>モード</label>
 <select name="mode">
 <option value="auto">じどう（在室のなかまの界隈で日本語/英語を自動切替）</option>
@@ -133,14 +158,14 @@
 <small>モデル・口調・音声認識の言語がまとめて切り替わります</small></div>
 <div class="field"><label>モデル</label>
 <select name="model"></select>
-<small>日本語/じどう用。VRAMからあふれる大きさだとCPU分担になり遅くなる</small></div>
+<small>日本語/じどう用。選んだモデルの大きさに合わせて、LLMへ渡す状況情報も自動調整します</small></div>
 <div class="field"><label>英語モードのモデル</label>
 <select name="model_en"></select>
 <small>英語が得意なものを（ABEJA等の日本語特化は英語が弱い）</small></div>
 <label class="check"><input type="checkbox" name="think"> かんがえてからはなす(賢くなるが返事がおそくなる・対応モデルのみ)</label>
 </section>
 
-<section class="card wide tj"><h2>じんかく</h2>
+<section class="card wide section-page" data-section="llm"><h2>じんかく</h2>
 <p class="desc">上から順につながって1本のプロンプトになります: せいかく → はなしかた → こだわり →
 じゆうテキスト(人格) → 自動のきほんルール(ナレーション・話者タグ禁止・返事の長さなど。編集不要) →
 れいぶん → まもりのルール → そうていもんどう → じどうで足されるぶん(なつき度・ばしょ・にっき等)。
@@ -191,7 +216,7 @@
 </div></div>
 </section>
 
-<section class="card tj setting-category" data-category="advanced-rules"><div class="category-head"><h2>まもりのルール</h2><label class="category-toggle"><input type="checkbox" name="advanced_rules_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="llm" data-category="advanced-rules"><div class="category-head"><h2>まもりのルール</h2><label class="category-toggle"><input type="checkbox" name="advanced_rules_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">個人情報・AI暴きへの返しかたのルール文。空にして保存すると初期文に戻ります</p>
 <small class="category-note">OFFにすると、ここで編集するルールだけでなく、基本ルールもLLMへ渡しません。</small>
@@ -203,7 +228,7 @@
 <small>{fake}=うそプロフィール(英語)の指示文 に置き換わります</small></div>
 </div></section>
 
-<section class="card tj setting-category" data-category="advanced-aizuchi"><div class="category-head"><h2>あいづち</h2><label class="category-toggle"><input type="checkbox" name="advanced_aizuchi_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="llm" data-category="advanced-aizuchi"><div class="category-head"><h2>あいづち</h2><label class="category-toggle"><input type="checkbox" name="advanced_aizuchi_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">LLMを通さず即出す短い反応。、区切りでならべます(空にして保存すると初期リストに戻る)</p>
 <div class="field"><label>あいづち(にほんご)</label>
@@ -213,7 +238,7 @@
 <small>盤面フォントに無い文字は消えるので、出ない言葉があったら文字を変えてみてください</small></div>
 </div></section>
 
-<section class="card ta setting-category" data-category="advanced-safety"><div class="category-head"><h2>禁止ワード・まもり</h2><label class="category-toggle"><input type="checkbox" name="advanced_safety_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="maintenance" data-category="advanced-safety"><div class="category-head"><h2>禁止ワード・まもり</h2><label class="category-toggle"><input type="checkbox" name="advanced_safety_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">危険質問あそび用のデータ。ルール文の{fake}などから参照されます</p>
 <div class="field"><label>うそプロフィール</label>
@@ -231,7 +256,7 @@
 <small>よく聞かれる質問→返しかたの手本を1行ずつ(例: なんさい？→ひみつだよ)。まる写しせず毎回くずして使います</small></div>
 </div></section>
 
-<section class="card ta setting-category" data-category="advanced-growth"><div class="category-head"><h2>そだち</h2><label class="category-toggle"><input type="checkbox" name="advanced_growth_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="integrations" data-category="advanced-growth"><div class="category-head"><h2>そだち</h2><label class="category-toggle"><input type="checkbox" name="advanced_growth_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">なつき方と、なかまの覚え方</p>
 <div class="field"><div class="lr"><label>なつきやすさ(倍率)</label>
@@ -251,7 +276,7 @@
 <small>フレンドじゃなくても、会った日数がこれ以上なら自動でなかまにする。0=しない</small></div>
 </div></section>
 
-<section class="card ta setting-category" data-category="advanced-sense"><div class="category-head"><h2>せかい</h2><label class="category-toggle"><input type="checkbox" name="advanced_sense_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="integrations" data-category="advanced-sense"><div class="category-head"><h2>せかい</h2><label class="category-toggle"><input type="checkbox" name="advanced_sense_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">ばしょ・きょく・時間への気づき</p>
 <div class="field"><div class="lr"><label>ばしょのひとこと率</label><output>%</output></div>
@@ -269,7 +294,7 @@
 <label class="check"><input type="checkbox" name="diary"> まいにち日記をかく(ペットの長期記憶になる)</label>
 </div></section>
 
-<section class="card ta setting-category" data-category="advanced-listener"><div class="category-head"><h2>耳(リスナー)</h2><label class="category-toggle"><input type="checkbox" name="advanced_listener_enabled" checked> 有効</label></div>
+<section class="card section-page setting-category" data-section="audio" id="audio-listener" data-category="advanced-listener"><div class="category-head"><h2>耳(リスナー)</h2><label class="category-toggle"><input type="checkbox" name="advanced_listener_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">こえの拾い方と聞き取り</p>
 <div class="field"><div class="lr"><label>音量ゲート</label>
@@ -293,13 +318,13 @@
 
 <div class="grid" style="margin-top:14px">
 
-<section class="card wide ta"><h2>こえおぼえ</h2>
+<section class="card wide section-page" data-section="audio"><h2>こえおぼえ</h2>
 <p class="desc">だれの声か教えると、つぎから名前つきで聞こえる</p>
 <div id="vprof" style="margin-bottom:4px"></div>
 <div id="voices">よみこみ中...</div>
 </section>
 
-<section class="card wide ta setting-category" data-category="vrcx"><div class="category-head"><h2>なかま / VRCX連携</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="vrcx_enabled" checked> 有効</label></div>
+<section class="card wide section-page setting-category" data-section="integrations" data-category="vrcx"><div class="category-head"><h2>なかま / VRCX連携</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="vrcx_enabled" checked> 有効</label></div>
 <div class="category-body">
 <div class="tools">
 <input id="fq" placeholder="なまえで検索" oninput="drawF()">
@@ -311,7 +336,7 @@
 <label class="check"><input type="checkbox" name="greet_friends"> なかまが来たら気づいて一言いう</label>
 </div></section>
 
-<section class="card wide ta"><h2>記憶ぜんぶ</h2>
+<section class="card wide section-page" data-section="integrations"><h2>記憶ぜんぶ</h2>
 <p class="desc">会話・日記・いまLLMに渡る追加情報。検索すると古い記憶まで探せます。いらない行は1件ずつ消せます</p>
 <div class="mem-head">
 <label class="memory-toggle"><input data-config-toggle type="checkbox" name="memory_conversation_enabled" checked> 会話の記憶</label>
@@ -331,13 +356,13 @@
 <div id="memory">よみこみ中...</div>
 </section>
 
-<section class="card wide ta setting-category" data-category="memory-words"><div class="category-head"><h2>おぼえてることば / 単語の記憶</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="memory_words_enabled" checked> 有効</label></div>
+<section class="card wide section-page setting-category" data-section="integrations" data-category="memory-words"><div class="category-head"><h2>おぼえてることば / 単語の記憶</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="memory_words_enabled" checked> 有効</label></div>
 <div class="category-body">
 <p class="desc">会話と日記によく出る単語。ありふれたことばはたたんであります。クリックすると、その単語を含む会話と日記をわすれます</p>
 <div id="words">よみこみ中...</div>
 </div></section>
 
-<section class="card wide ts"><h2>会話ログ</h2>
+<section class="card wide section-page" data-section="maintenance"><h2>会話ログ</h2>
 <div class="tools">
 <form id="purgeform">
 <input name="word" class="fnick" style="width:11em" placeholder="わすれたい単語">
@@ -351,7 +376,18 @@
 </section>
 
 </div>
+</div>
 </main>
+
+<div class="tour-layer" id="tour-layer" hidden role="dialog" aria-modal="true" aria-labelledby="tour-title">
+<div class="tour-focus" id="tour-focus"></div>
+<div class="tour-card" id="tour-card" tabindex="-1">
+<div class="tour-progress" id="tour-progress">1 / 4</div>
+<h2 id="tour-title">まずモデルを準備</h2>
+<p id="tour-body">GPU・VRAM・RAMに合うモデルを選びます。</p>
+<div class="tour-actions"><button type="button" class="ghost" id="tour-skip">スキップ</button><span></span><button type="button" class="ghost" id="tour-prev">戻る</button><button type="button" class="primary-action" id="tour-next">次へ</button></div>
+</div>
+</div>
 
 <div class="savebar" id="savebar">
 <small>設定がへんこうされています</small>

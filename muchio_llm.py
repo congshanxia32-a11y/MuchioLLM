@@ -9,7 +9,7 @@ VRCPet・Unity・アバターは無改造。stdlibのみ（依存ゼロ）。
   python muchio_llm.py --say てすと    # 文字盤に一発表示（動作確認用）
   python muchio_llm.py --ask こんにちは # LLM返答を生成して表示のみ（送信しない）
 """
-import difflib, hashlib, json, os, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request
+import difflib, hashlib, json, os, platform, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -35,6 +35,12 @@ FRAME_GAP = 0.25       # KATブロック送信間隔（本家準拠）
 HISTORY_TURNS = 20     # LLMに渡す直近往復数
 MIN_CHARS = 2          # これより短い発話には自分から返事しない(名前を呼ばれたら別)
 UI_PORT = 8787         # 設定UI http://localhost:8787
+
+# 短い人格返答は、温度を上げるほど「賢そうな独白」へ流れやすい。
+# UIに出さない内部の初期値。config.jsonに同名キーを書けば上書きできる。
+LLM_TEMPERATURE = 0.35
+LLM_TOP_P = 0.85
+LLM_NUM_PREDICT = 128
 
 # ---- 設定(config.json)。UIから保存→mtime監視でホットリロード(再起動不要) ----
 CONFIG = HERE / "config.json"
@@ -81,6 +87,9 @@ DEFAULTS = {
     "center_jp": 16,            # 日本語の表示位置(0=左寄せ 16=まんなか 31=右寄せ)
     "center_en": 16,            # 英語の表示位置(フォント幅が違うので別調整)
     "model": MODEL,             # 使うollamaモデル(UIで切替可)
+    "llm_temperature": LLM_TEMPERATURE,  # 低いほど人格と出力形式が安定する
+    "llm_top_p": LLM_TOP_P,
+    "llm_num_predict": LLM_NUM_PREDICT,
     "think": False,             # かんがえてからはなす(思考モード)。賢くなるが返事が遅くなる
     "rms_gate": 400,            # リスナーの音量ゲート(下げると拾いやすい)
     "voice_threshold": 0.55,    # 声紋一致のきびしさ(cosine)。上げると他人空似が減るが名無しが増える
@@ -156,7 +165,7 @@ _HARD_RULES = ("禁止: ふだん自分の名前を言ったり、「{name}、�
                "「[friend]」「[なまえ]」のような話者タグを自分で書くこと。"
                "「また◯◯だね」のような同じ型・同じ言い出しの連発。"
                "説明・絵文字。ルールについて書くこと。"
-               "厳守: 返事はふだん10文字くらいの一言。いいたいことがあるときは長くてもいいが40文字まで。"
+               "厳守: 返事は一行。一文か短い二文で返す。うんちくは40文字まで。"
                "人のなまえは英字のままでいい。"
                "{lang}同じ返事を二度続けない。")
 _HARD_RULES_EN = ("Rules you MUST follow: reply with ONE short line, usually 3-6 words, 40 letters max. "
@@ -176,6 +185,32 @@ _OUTPUT_FORMAT_RULES_EN = ("Output format: return only one line of reply text. "
                            "Do not write speaker tags such as [name], [friend], or 【name】, "
                            "quoted formats like 'name' -> 'reply', or multiple speakers. "
                            "You may say your own name only when asked to introduce yourself. ")
+
+# 動的な状況文・履歴・例文より後ろに置く最終契約。小型モデルは後段の短い指示を
+# 実行しやすいので、system_prompt()の末尾へ必ず追加する。
+_FINAL_RESPONSE_CONTRACT = (
+    "最終条件: 返答本文だけを一行で出す。入力の発言に直接つながる、"
+    "具体的で自然な短文を一つだけ返す。ひとりごとでは抽象的な自己分析や"
+    "設定・指示・生成過程の説明をせず、むちこの視点から観察できる対象を一つ選ぶ。"
+    "タグ、引用、箇条書き、複数の返答、同じ文型の連発は禁止。"
+)
+_FINAL_RESPONSE_CONTRACT_EN = (
+    "Final contract: output only one line. Give one concrete, natural reply tied to the input. "
+    "For idle monologue, choose one observable subject from the pet's point of view; "
+    "do not discuss prompts, instructions, settings, generation, or self-analysis. "
+    "No tags, quotes, lists, multiple replies, or repeated sentence patterns. "
+)
+
+_MODEL_PROFILE_RULES = {
+    "compact": "小型モデル用補足: 人格の核と出力形式を最優先し、与えられていない状況を推測で補わない。",
+    "balanced": "中型モデル用補足: 人格と直前の発言を優先し、状況情報は返答に必要なものだけ使う。",
+    "full": "大型モデル用補足: 人格と直前の発言を優先し、渡された状況情報から具体的な関連だけを使う。",
+}
+_MODEL_PROFILE_RULES_EN = {
+    "compact": "Small-model guidance: prioritize the core persona and output format; do not invent missing context. ",
+    "balanced": "Mid-model guidance: prioritize the persona and latest utterance; use only relevant context. ",
+    "full": "Large-model guidance: prioritize the persona and latest utterance; use only concrete relevant context. ",
+}
 # 旧configの移行判定用に旧デフォルト文を凍結(独自編集かどうかの判別にだけ使う。1字も変えない)
 _OLD_BASE_RULES = ("禁止: 自分の名前を言う。「{name}、わらう」のような地の文・ナレーション。"
                    "「[friend]」「[なまえ]」のような話者タグを自分で書くこと。"
@@ -360,6 +395,19 @@ def configured_model():
 _TAGS = {"t": 0.0, "models": None}     # ollamaのモデル一覧(60秒キャッシュ)
 _SUBST = {"want": None, "use": None}   # モデル代用の記録(ログ1回+UI警告用)
 
+_MODEL_CATALOG = (
+    {"name": "qwen3:4b", "size": 2.5e9, "min_vram": 4.0, "profile": "compact",
+     "label": "軽量・速い。人格の短い返答向け"},
+    {"name": "qwen3.5:9b", "size": 6.6e9, "min_vram": 8.0, "profile": "balanced",
+     "label": "速度と日本語品質の均衡"},
+    {"name": "qwen3:14b", "size": 9.3e9, "min_vram": 12.0, "profile": "balanced",
+     "label": "品質重視。VRAMに余裕が必要"},
+    {"name": "qwen3:30b", "size": 19.0e9, "min_vram": 20.0, "profile": "full",
+     "label": "品質重視。大容量GPU向け"},
+)
+_PULL_STATE = {"status": "idle", "model": "", "line": "", "error": ""}
+_PULL_LOCK = threading.Lock()
+
 def _installed_models():
     """ollamaに入っている(name, size)一覧。不通ならNone=判定不能"""
     if time.time() - _TAGS["t"] > 60:
@@ -380,8 +428,9 @@ def active_model():
     if have is None or any(n == want for n, _ in have):
         _SUBST["want"] = _SUBST["use"] = None
         return want
+    fit_limit = _model_fit_limit_bytes()
     fits = [(sz, n) for n, sz in have
-            if _is_text_model(n) and (not _RAM or not sz or sz <= _RAM * 0.75)]
+            if _is_text_model(n) and (not fit_limit or not sz or sz <= fit_limit)]
     cands = fits or [(sz, n) for n, sz in have if _is_text_model(n)]
     if not cands:
         return want
@@ -390,6 +439,108 @@ def active_model():
         _SUBST["want"], _SUBST["use"] = want, use
         log(f"モデル {want} が入っていないので {use} で代用します(設定UIで選び直せます)")
     return use
+
+
+def _model_size_bytes(model):
+    """インストール済みモデルのファイルサイズ。取得できないときは0。"""
+    for name, size in (_installed_models() or []):
+        if name == model:
+            return int(size or 0)
+    for item in _MODEL_CATALOG:
+        if item["name"] == model:
+            return int(item["size"])
+    return 0
+
+
+def model_prompt_profile(model=None):
+    """モデル能力に合わせて、状況情報をどこまでプロンプトへ足すか決める。"""
+    name = model or active_model()
+    size = _model_size_bytes(name)
+    if size and size <= 4.5e9:
+        return "compact"
+    if size and size <= 11e9:
+        return "balanced"
+    if re.search(r":(?:0\.6b|4b)(?:[-:]|$)", name, re.I):
+        return "compact"
+    if re.search(r":(?:8b|9b|14b)(?:[-: ]|$)", name, re.I):
+        return "balanced"
+    return "full"
+
+
+def _gpu_info():
+    """nvidia-smiがあればGPU名・VRAMを取得。無いPCでもUIは動かす。"""
+    exe = shutil.which("nvidia-smi")
+    if not exe:
+        return {"name": "取得できません", "total_gb": 0.0, "free_gb": 0.0}
+
+
+    try:
+        cp = subprocess.run(
+            [exe, "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        row = next((x.strip() for x in cp.stdout.splitlines() if x.strip()), "")
+        name, total, free = [x.strip() for x in row.split(",", 2)]
+        return {"name": name, "total_gb": round(float(total) / 1024, 1),
+                "free_gb": round(float(free) / 1024, 1)}
+    except (OSError, ValueError):
+        return {"name": "取得できません", "total_gb": 0.0, "free_gb": 0.0}
+
+
+def _model_fit_limit_bytes():
+    """自動代用で許すサイズ。GPUに載せられるモデルを優先し、RAM逃がしを避ける。"""
+    gpu = _gpu_info()
+    if gpu["total_gb"]:
+        return gpu["total_gb"] * 1024 ** 3 * 0.82
+    return _RAM * 0.75 if _RAM else 0
+
+
+def hardware_info():
+    """UIへ渡す、モデル選択に必要な最小限のハードウェア情報。"""
+    gpu = _gpu_info()
+    ram_gb = round(_RAM / 1024 ** 3, 1) if _RAM else 0.0
+    vram = gpu["total_gb"]
+    fits = [x for x in _MODEL_CATALOG if not vram or x["min_vram"] <= vram * 0.82]
+    recommended = max(fits or _MODEL_CATALOG, key=lambda x: x["min_vram"])["name"]
+    installed = [name for name, _ in (_installed_models() or [])]
+    return {"os": platform.platform(aliased=True), "cpu": platform.processor() or "取得できません",
+            "ram_gb": ram_gb, "gpu": gpu, "recommended": recommended,
+            "prompt_profile": model_prompt_profile(), "installed": installed,
+            "catalog": list(_MODEL_CATALOG)}
+
+
+def _pull_worker(model):
+    """Ollamaのpullを別スレッドで実行し、UIから進捗を読めるようにする。"""
+    try:
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(["ollama", "pull", model], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+                                errors="replace", creationflags=creationflags)
+        with _PULL_LOCK:
+            _PULL_STATE.update(status="running", model=model, line="取得を開始しました", error="")
+        for line in proc.stdout or []:
+            with _PULL_LOCK:
+                _PULL_STATE["line"] = line.strip()[-240:]
+        code = proc.wait()
+        with _PULL_LOCK:
+            _PULL_STATE["status"] = "done" if code == 0 else "error"
+            _PULL_STATE["error"] = "" if code == 0 else f"ollama pull が終了コード {code} で失敗しました"
+        _TAGS["t"] = 0.0
+        _TAGS["models"] = None
+    except Exception as e:
+        with _PULL_LOCK:
+            _PULL_STATE.update(status="error", error=str(e))
+
+
+def start_model_pull(model):
+    allowed = {x["name"] for x in _MODEL_CATALOG}
+    if model not in allowed:
+        return {"ok": False, "error": "推奨一覧にないモデルは取得できません"}
+    with _PULL_LOCK:
+        if _PULL_STATE["status"] == "running":
+            return {"ok": False, "error": "別のモデルを取得中です"}
+        _PULL_STATE.update(status="starting", model=model, line="", error="")
+    threading.Thread(target=_pull_worker, args=(model,), daemon=True).start()
+    return {"ok": True, "model": model}
 
 def db_suffix():
     """記憶(会話・日記)の界隈別サフィックス。auto(判定不能)はJP側(飼い主は日本語話者)"""
@@ -714,12 +865,16 @@ def _core_text(key, en=False):
 
 def system_prompt():
     mode = effective_mode()
+    profile = model_prompt_profile()
+    # 小さいモデルでは、状況情報を増やすほど人格ルールが文脈の後ろへ押し出される。
+    # 大きいモデルだけがVRCX・日記・フレンド文脈まで受け取る。
+    rich_context = profile == "full"
     qa = ((CFG.get("qa_notes") or "").strip().replace("\r", "").replace("\n", " / ")
-          if CFG.get("advanced_safety_enabled", True) else "")
+          if CFG.get("advanced_safety_enabled", True) and rich_context else "")
     growth_lines = (growth.prompt_lines(en=True)
-                    if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
+                    if rich_context and CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
     sense_lines = (vrcx_sense.prompt_lines(en=True)
-                   if CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
+                   if rich_context and CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
     rules_en = (named("rules_en").replace("{fake}", _fake_clause(True))
                 if CFG.get("advanced_rules_enabled", True) else "")
     core_identity = _core_text("core_identity_en", True) if CFG.get("core_prompt_enabled", True) else ""
@@ -740,15 +895,17 @@ def system_prompt():
             + ("Prepared Q->A notes (vary the wording, never copy verbatim): " + qa + " " if qa else "")
             + growth_lines
             + sense_lines
-            + _friend_context(en=True)
+            + (_friend_context(en=True) if rich_context else "")
+            + _MODEL_PROFILE_RULES_EN.get(profile, _MODEL_PROFILE_RULES_EN["full"])
+            + _FINAL_RESPONSE_CONTRACT_EN
         )
     lang = ("返事は必ず日本語。英語で話しかけられても日本語で返す。"
             if mode == "jp" else
             "直前の発言が英語なら、返事も必ず英語(小文字)。")
     growth_lines = (growth.prompt_lines()
-                    if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
+                    if rich_context and CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
     sense_lines = (vrcx_sense.prompt_lines()
-                   if CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
+                   if rich_context and CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
     rules = (named("rules").replace("{fake}", _fake_clause(False))
              if CFG.get("advanced_rules_enabled", True) else "")
     core_identity = _core_text("core_identity", False) if CFG.get("core_prompt_enabled", True) else ""
@@ -765,8 +922,10 @@ def system_prompt():
         + _rule_toggle_lines(False)
         + _examples(False)
          + rules
-        + ("そうてい問答(よくくる質問への返しかたの手本。まる写しせず毎回言い方をくずす): " + qa + " " if qa else "")
-         + growth_lines + sense_lines + _friend_context()
+         + ("そうてい問答(よくくる質問への返しかたの手本。まる写しせず毎回言い方をくずす): " + qa + " " if qa else "")
+         + growth_lines + sense_lines + (_friend_context() if rich_context else "")
+         + _MODEL_PROFILE_RULES.get(profile, _MODEL_PROFILE_RULES["full"])
+         + _FINAL_RESPONSE_CONTRACT
     )
 
 # 相槌: LLMを通さず即出す短い反応。生成を待たずに「聞いてる」を返せる。
@@ -2078,6 +2237,32 @@ def want_think():
     """思考モードが効く状態か(設定ON or 思考型モデル)。生成が遅い=点々を出す判定も兼ねる"""
     return bool(CFG.get("think")) or bool(re.search(r"r1|gpt-oss|think", active_model()))
 
+
+_META_REPLY_MARKERS = (
+    "プロンプト", "コンテキスト", "トークン", "システムメッセージ", "自己分析",
+    "生成過程", "変数メモリ", "prompt", "context window", "system message",
+)
+
+
+def _reply_contract_hits(raw):
+    """会話として表示しない自己解説・複数行出力を検出する。
+
+    意味の良し悪しを採点するのではなく、壊れた出力だけを再生成へ回す。
+    小型モデルに「本質を突け」とだけ要求すると、自己解説を鋭い返答と誤認する
+    ことがあるため、ここは狭い検査に留める。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ["empty"]
+    hits = []
+    if "\n" in text or "\r" in text:
+        hits.append("multiline")
+    if re.search(r"<\/?think>|^\s*(?:assistant|user|system)\s*:", text, re.I):
+        hits.append("wrapper")
+    if any(marker in text.lower() for marker in _META_REPLY_MARKERS):
+        hits.append("meta")
+    return hits
+
 def ollama_chat(history, user_text, timeout=90):
     # 自分の過去返答は直近3件だけ文脈に入れる(お手本が多いと型に固執する)。ユーザー発言は全部入れる
     a_idx = [i for i, (r, _) in enumerate(history) if r == "assistant"]
@@ -2101,16 +2286,32 @@ def ollama_chat(history, user_text, timeout=90):
         msgs[-1]["content"] += "／" + user_text
     else:
         msgs.append({"role": "user", "content": user_text})
+    # 現在の入力の末尾に返答欄を置く。履歴のタグや独白指示を本文と取り違えにくくする。
+    msgs[-1]["content"] += "\n返答本文:"
     model = active_model()
     # 思考型モデル/思考ONは思考トークンで大量に消費するので上限を広げる(思考部は後段で除去)
     thinky = want_think()
     npred = 4000 if thinky else 100
+    try:
+        temperature = min(1.5, max(0.0, float(CFG.get("llm_temperature", LLM_TEMPERATURE))))
+    except (TypeError, ValueError):
+        temperature = LLM_TEMPERATURE
+    try:
+        top_p = min(1.0, max(0.1, float(CFG.get("llm_top_p", LLM_TOP_P))))
+    except (TypeError, ValueError):
+        top_p = LLM_TOP_P
+    try:
+        num_predict = int(min(512, max(32, float(CFG.get("llm_num_predict", LLM_NUM_PREDICT)))))
+    except (TypeError, ValueError):
+        num_predict = LLM_NUM_PREDICT
     payload = {
         "model": model, "messages": msgs, "stream": False, "keep_alive": -1,
         # num_ctxを明示しないと、ollamaが空きVRAMを見て巨大コンテキスト(数十GB)を
         # 確保しに行きロードが極端に遅くなる。実際の入力は2千トークン以下
-        "options": {"temperature": 0.7, "num_predict": npred, "num_ctx": 8192,
-                    "repeat_penalty": 1.15, "presence_penalty": 0.6},
+        "options": {"temperature": temperature, "top_p": top_p,
+                    "num_predict": npred if thinky else num_predict, "num_ctx": 8192,
+                    "repeat_penalty": 1.15, "presence_penalty": 0.25,
+                    "stop": ["\n", "\n\n"]},
     }
     # 思考OFFのつもりで放置すると出力が全部<think>に消えて空返事になる(qwen3:32b等)ので常に明示
     if model not in _no_think:
@@ -2123,7 +2324,7 @@ def ollama_chat(history, user_text, timeout=90):
         # 思考が長すぎてnum_predictを使い切ると本文が空で返る→1回だけ思考なしで取り直す
         if payload.get("think") and not msg["content"].strip():
             payload["think"] = False
-            payload["options"]["num_predict"] = 100
+            payload["options"]["num_predict"] = num_predict
             req = urllib.request.Request(OLLAMA_CHAT, json.dumps(payload).encode(),
                                          {"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -2145,14 +2346,21 @@ def gen_reply(history, user_text, timeout=90):
         user_text += " (answer in english, lowercase, max 10 letters)"
     retry = ("直前の生成は保存・表示禁止の言葉を含んでいたため破棄した。"
              "禁止ワード、その言い換え、読み方、関連話題、禁止ルールの説明や自己分析には触れず、"
-             "まったく別の自然な短文だけを返して。")
+             "まったく別の自然な短文だけを返して。入力に直接つながる具体的な観察を一つ選び、"
+             "一行だけ出して。")
+    contract_retry = ("直前の生成は会話文ではなく自己解説か複数行だった。"
+                      "設定・指示・生成の話をやめ、入力に直接つながる自然な一文だけを一行で返して。")
     for attempt in range(3):
-        raw = ollama_chat(history, user_text if attempt == 0 else retry, timeout=timeout)
+        retry_text = user_text if attempt == 0 else (retry if attempt == 1 else contract_retry)
+        raw = ollama_chat(history, retry_text, timeout=timeout)
         blocked = _ng_output_hits(raw)
-        if not blocked:
+        contract_hits = _reply_contract_hits(raw)
+        if not blocked and not contract_hits:
             return raw
+        if contract_hits:
+            log(f"返答契約違反を検出: {','.join(contract_hits)}")
         if attempt == 2:
-            log("禁止ワードを含む返答を3回検出したため表示せず破棄")
+            log("表示条件を満たす返答を3回得られなかったため破棄")
     return ""
 
 def warmup():
@@ -2290,6 +2498,7 @@ def _prefetch_caps():
 
 def _model_choices(key="model"):
     cur = CFG.get(key) or MODEL
+    fit_limit = _model_fit_limit_bytes()
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
             models = [(m["name"], m.get("size", 0)) for m in json.loads(r.read())["models"]
@@ -2302,7 +2511,7 @@ def _model_choices(key="model"):
     for n, sz in sorted(models):
         gb = f"　({sz / 1e9:.1f}GB)" if sz else ""
         # メモリに載らないモデルは選ぶと固まるので警告を出す
-        if sz and _RAM and sz > _RAM * 0.75:
+        if sz and fit_limit and sz > fit_limit:
             gb += "　⚠ このPCには大きすぎます"
         elif sz and sz > 40e9:
             gb += "　⚠ おそい"
@@ -2551,6 +2760,13 @@ class _UIHandler(BaseHTTPRequestHandler):
         if path == "/bootstrap":
             self._send_json(_bootstrap_data())
             return
+        if path == "/hardware":
+            self._send_json(hardware_info())
+            return
+        if path == "/model_pull_status":
+            with _PULL_LOCK:
+                self._send_json(dict(_PULL_STATE))
+            return
         if path == "/log":
             self._send_html(_log_html())
             return
@@ -2639,6 +2855,9 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         n = int(self.headers.get("Content-Length") or 0)
         q = parse_qs(self.rfile.read(n).decode("utf-8"))
+        if self.path == "/model_pull":
+            self._send_json(start_model_pull(q.get("model", [""])[0].strip()))
+            return
         if self.path == "/ng_word_delete":
             word = q.get("word", [""])[0].strip()
             if not word:
@@ -2776,6 +2995,9 @@ class _UIHandler(BaseHTTPRequestHandler):
             "stt_hint": (q.get("stt_hint", [""])[0].strip() or DEFAULTS["stt_hint"])[:200],
             "model": (q.get("model", [""])[0].strip() or DEFAULTS["model"])[:120],
             "model_en": (q.get("model_en", [""])[0].strip() or DEFAULTS["model_en"])[:120],
+            "llm_temperature": min(1.5, max(0.0, float(CFG.get("llm_temperature", LLM_TEMPERATURE)))),
+            "llm_top_p": min(1.0, max(0.1, float(CFG.get("llm_top_p", LLM_TOP_P)))),
+            "llm_num_predict": int(min(512, max(32, float(CFG.get("llm_num_predict", LLM_NUM_PREDICT))))),
             "mode": q.get("mode", ["auto"])[0] if q.get("mode", ["auto"])[0] in ("auto", "jp", "en") else "auto",
             "core_identity_en": (q.get("core_identity_en", [""])[0].strip()
                                  or DEFAULTS["core_identity_en"])[:500],
@@ -3136,21 +3358,21 @@ def main():
                     tgt = random.choice(mates)
                     last_poke = tgt
                     log(f"ちょっかい: →{tgt}")
-                    say(f"（だれもしゃべっていない。いまここにいる{tgt}に"
-                        "ちょっかいをだすひとこと。はなしかけても、からかってもいい。"
-                        "なまえはこちらで先につけるので書かない）", prefix=tgt)
+                    say(f"（いまここにいる{tgt}へ、VRChatの場に結びつく具体的な観察か"
+                        "短い問いを一つ。名前はこちらで先につけるので書かない）", prefix=tgt)
                 else:
                     # 学習した単語をたまに蒸し返す(純正VRCPetのつぶやき風)
                     ws = _interesting_words("en" if db_suffix() == "_en" else "jp")
                     if ws and random.random() < 0.5:   # ponytail: 固定50%、ノブが欲しくなったらconfig化
                         w = random.choice(ws)
                         log(f"ひとりごと(ことば: {w})")
-                        say(f"（だれもしゃべっていない。まえにきいた「{w}」ということばが"
-                            "きになっている。それについてひとりごとをひとこと）")
+                        say(f"（まえにきいた「{w}」を使い、いまのVRChatの場に結びつけた"
+                            "具体的な観察を一文だけ）")
                     else:
                         log("ひとりごと")
-                        say("（だれもしゃべっていない。ひとりごとをひとこと。"
-                            "だれの名前もよばない。むかしの話題をむしかえしても、きままな一言でもいい）")
+                        say("（だれもしゃべっていない。抽象的な自己分析は禁止。"
+                            "いまいるVRChatの場か直前の会話に結びつく具体的な観察を一文だけ。"
+                            "だれの名前もよばない）")
             history[:] = history[-HISTORY_TURNS * 4:]
             time.sleep(0.2)
         except KeyboardInterrupt:
