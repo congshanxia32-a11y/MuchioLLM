@@ -3,6 +3,40 @@
 """python test_muchio.py — 相槌と「聞く間」の最低限チェック。"""
 import muchio_llm as m
 
+# ---- 弱いモデル対策: 意図分類・fallback・履歴制限 ----
+_guard_cfg = dict(m.CFG)
+_guard_name_re = m.NAME_RE
+try:
+    m.CFG["weak_reply_guard"] = True
+    m.CFG["mode"] = "jp"
+    assert m.classify_intent("こんにちは")["key"] == "greeting"
+    assert m.classify_intent("つかれた")["key"] == "care"
+    assert m.classify_intent(m.pet() + "、つかれた")["key"] == "care"
+    assert m.classify_intent("ありがとう")["key"] == "thanks"
+    assert m.classify_intent(m.pet())["key"] == "name_call"
+    assert m.classify_intent("これは雑談です")["key"] == "unknown"
+    assert m.should_use_template("こんにちは", source="heard")
+    assert not m.should_use_template("こんにちは", source="internal")
+    m.CFG["mode"] = "en"
+    assert m.classify_intent("hello")["key"] == "greeting"
+    assert m.classify_intent("i am tired")["key"] == "care"
+    assert m.classify_intent("thanks")["key"] == "thanks"
+    assert m.classify_intent(m.pet_en())["key"] == "name_call"
+    parsed = m._fallback_map("greeting=hi|hello\nbadline\nnope=x\ncare=rest")
+    assert parsed == {"greeting": ["hi", "hello"], "care": ["rest"]}, parsed
+    m.CFG["fallback_templates_en"] = "greeting=hello"
+    assert m.fallback_reply({"key": "greeting", "lang": "en"}, []) == "hello"
+    assert not m._reply_usable("[friend] hi", "hi", [])
+    assert not m._reply_usable("（ルールに基づき削除）", "返事", [])
+    hist = [("user", str(i)) for i in range(12)]
+    assert m._prompt_history(hist) == hist[-8:]
+    m.CFG["weak_reply_guard"] = False
+    assert m._prompt_history(hist) == hist
+finally:
+    m.CFG.clear()
+    m.CFG.update(_guard_cfg)
+    m.NAME_RE = _guard_name_re
+
 # 相槌が文字盤フォントを通り抜けられること（消えると無言になり相槌の意味が消える）
 for s in m.aizuchi_pool(False) + m.aizuchi_pool(True):
     out = m.to_board_text(s)

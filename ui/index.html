@@ -138,6 +138,15 @@
 <select name="model_en"></select>
 <small>英語が得意なものを（ABEJA等の日本語特化は英語が弱い）</small></div>
 <label class="check"><input type="checkbox" name="think"> かんがえてからはなす(賢くなるが返事がおそくなる・対応モデルのみ)</label>
+<h3>よわいモデル対策</h3>
+<label class="check"><input type="checkbox" name="weak_reply_guard"> 意図をしぼって短く返す</label>
+<label class="check"><input type="checkbox" name="retry_bad_reply"> おかしな返事を1回だけ言い直す</label>
+<div class="field"><label>fallback(にほんご)</label>
+<textarea name="fallback_templates" rows="6"></textarea>
+<small>LLMが空・重複・タグ付きになったときの予備返答。1行1組、<code>意図=候補1|候補2</code>。意図は name_call / greeting / care / thanks / unknown</small></div>
+<div class="field"><label>fallback(えいご)</label>
+<textarea name="fallback_templates_en" rows="6"></textarea>
+<small>英語モード用。同じ形式で書きます</small></div>
 </section>
 
 <section class="card wide tj"><h2>じんかく</h2>

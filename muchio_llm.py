@@ -82,6 +82,10 @@ DEFAULTS = {
     "center_en": 16,            # 英語の表示位置(フォント幅が違うので別調整)
     "model": MODEL,             # 使うollamaモデル(UIで切替可)
     "think": False,             # かんがえてからはなす(思考モード)。賢くなるが返事が遅くなる
+    "weak_reply_guard": True,   # 弱いモデル向け: 意図分類・短い履歴・構造検査
+    "retry_bad_reply": True,    # 空/重複/タグ等の返答を1回だけ言い直させる
+    "fallback_templates": "name_call=なあに？|よんだ？\ngreeting=やあ|こんにちは|おはよう\ncare=むりしないでね|ちょっとやすむ？\nthanks=どういたしまして|うんうん|またね\nunknown=ん？|もうちょっときいてみて",
+    "fallback_templates_en": "name_call=yes?|yeah?\ngreeting=hi|hey there|hello\ncare=get some rest|take it easy\nthanks=anytime|see you\nunknown=huh?|go on",
     "rms_gate": 400,            # リスナーの音量ゲート(下げると拾いやすい)
     "voice_threshold": 0.55,    # 声紋一致のきびしさ(cosine)。上げると他人空似が減るが名無しが増える
     "silence_end": 0.45,        # 発話終了とみなす無音秒数
@@ -663,6 +667,8 @@ def _friend_context(en=False):
             or not CFG.get("advanced_listener_enabled", True)):
         return ""
     n = int(float(CFG.get("friend_context", 0)))
+    if CFG.get("weak_reply_guard", True):
+        n = min(n, 3)
     if n <= 0:
         return ""
     try:
@@ -871,6 +877,133 @@ def strip_call(text):
             if rest:
                 return rest
     return text
+
+
+# 弱いモデル対策: 文章全体をLLMに解釈させる前に、確度の高い短文だけ分類する。
+_REPLY_INTENTS = ("name_call", "greeting", "care", "thanks", "unknown")
+_TEMPLATE_INTENTS = frozenset(set(_REPLY_INTENTS) - {"unknown"})
+_JP_GREETING_RE = re.compile(
+    r"^(?:おはよ(?:う|ー)?|こんにちは|こんばんは|やあ|やっほー?|おっす|ただいま|おかえり|よろしく)(?:[！!。、,～〜 ]*)$",
+    re.I)
+_JP_CARE_RE = re.compile(r"(?:つかれた|疲れた|ねむい|眠い|しんどい|かなしい|悲しい|つらい|辛い|いたい|痛い|体調|具合)")
+_JP_THANKS_RE = re.compile(r"(?:ありがとう|ありがと|感謝|たすかった|助かった|またね|おやすみ|ばいばい|バイバイ|さよなら)")
+_EN_GREETING_RE = re.compile(r"^(?:hi|hey|hello|yo|howdy|good morning|good evening|good night)[ !.,?]*$", re.I)
+_EN_CARE_RE = re.compile(r"\b(?:tired|sleepy|sad|hurt|pain|exhausted|rough day|not feeling well)\b", re.I)
+_EN_THANKS_RE = re.compile(r"\b(?:thanks?|thank you|appreciate it|bye|good night|see you|later)\b", re.I)
+
+
+def _plain_input(text):
+    return re.sub(r"^\[[^\]]{1,40}\][ \t　]*", "", str(text or "").strip())
+
+
+def _remove_pet_call(text):
+    text = str(text or "").strip()
+    for name in (pet(), pet_en()):
+        name = str(name or "")
+        if name and text.lower().startswith(name.lower()):
+            return text[len(name):].lstrip("、,。.!?！？ 　")
+    return text
+
+
+def classify_intent(text):
+    original = str(text or "").strip()
+    plain = _plain_input(original)
+    body = _remove_pet_call(plain)
+    speaker = "friend" if original.startswith("[") else "owner"
+    if not plain:
+        return {"key": "unknown", "lang": "jp", "speaker": speaker, "confident": False}
+    mode = effective_mode()
+    ascii_ratio = sum(c.isascii() for c in plain) / max(1, len(plain))
+    en = mode == "en" or (mode == "auto" and ascii_ratio > 0.8)
+    if called_name(plain) and not body:
+        lang, key = ("en" if en else "jp"), "name_call"
+    elif en:
+        lang = "en"
+        if _EN_GREETING_RE.fullmatch(body):
+            key = "greeting"
+        elif _EN_CARE_RE.search(body):
+            key = "care"
+        elif _EN_THANKS_RE.search(body):
+            key = "thanks"
+        else:
+            key = "unknown"
+    else:
+        lang = "jp"
+        if _JP_GREETING_RE.fullmatch(body):
+            key = "greeting"
+        elif _JP_CARE_RE.search(body):
+            key = "care"
+        elif _JP_THANKS_RE.search(body):
+            key = "thanks"
+        else:
+            key = "unknown"
+    return {"key": key, "lang": lang, "speaker": speaker,
+            "confident": key in _TEMPLATE_INTENTS}
+
+
+def _fallback_map(raw):
+    out = {}
+    for line in str(raw or "").replace("\r", "").splitlines():
+        key, sep, values = line.partition("=")
+        key = key.strip()
+        if not sep or key not in _REPLY_INTENTS:
+            continue
+        choices = [v.strip() for v in values.split("|") if v.strip()]
+        if choices:
+            out[key] = choices[:20]
+    return out
+
+
+def fallback_reply(intent, recent=()):
+    intent = intent or {"key": "unknown", "lang": "jp"}
+    lang = "en" if intent.get("lang") == "en" else "jp"
+    key = intent.get("key") if intent.get("key") in _REPLY_INTENTS else "unknown"
+    cfg_key = "fallback_templates_en" if lang == "en" else "fallback_templates"
+    choices = _fallback_map(CFG.get(cfg_key, "")).get(key, [])
+    if not choices:
+        choices = _fallback_map(DEFAULTS[cfg_key]).get(key, [])
+    converted = []
+    for choice in choices:
+        board_choice = to_board_text(choice)
+        if board_choice:
+            converted.append(board_choice)
+    fresh = [c for c in converted if not any(too_similar(c, p) for p in recent)]
+    return random.choice(fresh or converted) if (fresh or converted) else ""
+
+
+def _task_prompt(intent):
+    if not intent or not CFG.get("weak_reply_guard", True):
+        return ""
+    labels = {
+        "name_call": ("呼びかけ", "返事をする"),
+        "greeting": ("あいさつ", "自然にあいさつを返す"),
+        "care": ("気づかい", "短くいたわる"),
+        "thanks": ("感謝・別れ", "短く受けるか、別れを返す"),
+        "unknown": ("雑談・質問", "発話に直接答える。わからなければ短く聞き返す"),
+    }
+    label, policy = labels.get(intent.get("key"), labels["unknown"])
+    speaker = "飼い主" if intent.get("speaker") == "owner" else "フレンド"
+    if intent.get("lang") == "en":
+        en_labels = {
+            "name_call": ("being called", "answer briefly"),
+            "greeting": ("greeting", "return the greeting naturally"),
+            "care": ("care", "be briefly supportive"),
+            "thanks": ("thanks or goodbye", "reply briefly"),
+            "unknown": ("chat or question", "answer directly; ask briefly if unclear"),
+        }
+        label, policy = en_labels.get(intent.get("key"), en_labels["unknown"])
+        speaker = "owner" if intent.get("speaker") == "owner" else "friend"
+        return f"Task: intent={label}; speaker={speaker}; {policy}. Output one short natural line only. Do not explain or add tags."
+    return f"今回の意図: {label}。話者: {speaker}。{policy}。短い自然な一言だけ。説明や話者タグは書かない。"
+
+
+def _prompt_history(history):
+    return list(history[-8:]) if CFG.get("weak_reply_guard", True) else list(history)
+
+
+def should_use_template(text, source="internal"):
+    return (source == "heard" and CFG.get("weak_reply_guard", True)
+            and classify_intent(text).get("confident", False))
 
 def normalize_text(s):
     s = unicodedata.normalize("NFKC", s)   # 全角英数記号→半角、！→! など
@@ -1943,13 +2076,14 @@ def want_think():
     """思考モードが効く状態か(設定ON or 思考型モデル)。生成が遅い=点々を出す判定も兼ねる"""
     return bool(CFG.get("think")) or bool(re.search(r"r1|gpt-oss|think", active_model()))
 
-def ollama_chat(history, user_text, timeout=90):
-    # 自分の過去返答は直近3件だけ文脈に入れる(お手本が多いと型に固執する)。ユーザー発言は全部入れる
+def ollama_chat(history, user_text, timeout=90, intent=None):
+    # 弱いモデルでは直近8記録に絞り、その中で自分の返答は直近3件だけお手本にする
+    history = _prompt_history(history)
     a_idx = [i for i, (r, _) in enumerate(history) if r == "assistant"]
     keep = set(a_idx[-3:])
     history = [(r, t) for i, (r, t) in enumerate(history)
                if r != "assistant" or i in keep]
-    msgs = [{"role": "system", "content": system_prompt()}]
+    msgs = [{"role": "system", "content": system_prompt() + _task_prompt(intent)}]
     prev_role = "system"
     sent_replies = []   # ワンパターン化した過去返答は文脈から間引く(お手本にさせない)
     for role, text in history:
@@ -1997,10 +2131,10 @@ def ollama_chat(history, user_text, timeout=90):
     except urllib.error.HTTPError as e:
         if e.code == 400 and model not in _no_think:
             _no_think.add(model)   # think指定を受け付けないモデルなので次から付けない
-            return ollama_chat(history, user_text, timeout)
+            return ollama_chat(history, user_text, timeout, intent=intent)
         raise
 
-def gen_reply(history, user_text, timeout=90):
+def gen_reply(history, user_text, timeout=90, intent=None):
     """LLM返答を生成。英語発話には英語ヒントを付与。漢字はto_board_textが読みに変換する。"""
     mode = effective_mode()
     plain = re.sub(r"^\[[^\]]+\] ", "", user_text)   # [名前]/[friend]タグを外して言語判定
@@ -2008,7 +2142,18 @@ def gen_reply(history, user_text, timeout=90):
         user_text += " (reply in lowercase english, max 6 words)"
     elif mode != "jp" and plain and sum(c.isascii() for c in plain) > len(plain) * 0.8:
         user_text += " (answer in english, lowercase, max 10 letters)"
-    return ollama_chat(history, user_text, timeout=timeout)
+    return ollama_chat(history, user_text, timeout=timeout, intent=intent)
+
+
+def _raw_reply_bad(raw):
+    raw = str(raw or "")
+    return bool(re.search(r"^\s*(?:\[[^\]]{1,20}\][ \t　]*)+", raw)
+                or _META_RE.search(raw))
+
+
+def _reply_usable(raw, reply, recent):
+    return bool(reply) and not _raw_reply_bad(raw) and not any(
+        too_similar(reply, p) for p in recent)
 
 def warmup():
     log(f"ollama ウォームアップ中 ({active_model()}, keep_alive=-1)...")
@@ -2618,6 +2763,12 @@ class _UIHandler(BaseHTTPRequestHandler):
             "core_friend_intro_en": (q.get("core_friend_intro_en", [""])[0].strip()
                                      or DEFAULTS["core_friend_intro_en"])[:500],
             "think": "think" in q,
+            "weak_reply_guard": "weak_reply_guard" in q,
+            "retry_bad_reply": "retry_bad_reply" in q,
+            "fallback_templates": (q.get("fallback_templates", [""])[0].strip()
+                                    or DEFAULTS["fallback_templates"])[:1500],
+            "fallback_templates_en": (q.get("fallback_templates_en", [""])[0].strip()
+                                      or DEFAULTS["fallback_templates_en"])[:1500],
             "kanji_mode": "kanji_mode" in q,
             "osc_proxy": "osc_proxy" in q,
             "stt_hint_en": (q.get("stt_hint_en", [""])[0].strip() or DEFAULTS["stt_hint_en"])[:200],
@@ -2741,11 +2892,12 @@ def main():
         _dots_start(s, already_shown=True,
                     hold_check=lambda: time.time() - last_said < SAID_HOLD)
 
-    def say(prompt_text, exclude_last=False, prefix=None, thinking=False):
+    def say(prompt_text, exclude_last=False, prefix=None, thinking=False, source="internal"):
         """LLMで一言生成→重複チェック→盤面が空くのを待って表示。成功でTrue。
         prefix: 呼びかける相手の名前。LLMに書かせると化ける(ひらがな縛りに負けて
         Cloma→こま等)ので、こちらで先頭に付けて確実に出す
-        thinking: 生成中に点々アニメを出す(発話への返答。思考モード中は生成が遅いので全経路)"""
+        thinking: 生成中に点々アニメを出す(発話への返答。思考モード中は生成が遅いので全経路)
+        source="heard" のときだけ、高確度の短い発話をテンプレートへルーティングする"""
         nonlocal shown_at, last_reply, hide_hold
         if (thinking or want_think()) and not (_dots_thread and _dots_thread.is_alive()):
             page_queue.clear()   # 点々が盤面を消すので、前の返答の続きページも破棄
@@ -2753,25 +2905,38 @@ def main():
                         hold_check=lambda: time.time() - last_said < SAID_HOLD)
         hist = (history[-HISTORY_TURNS * 2:-1] if exclude_last else history[-HISTORY_TURNS * 2:]
                 if CFG.get("memory_conversation_enabled", True) else [])
+        intent = classify_intent(prompt_text)
+        route = "llm"
+        raw = ""
+        reply = ""
         try:
-            try:
-                raw = gen_reply(hist, prompt_text)
-            except Exception as e:
-                log(f"ollama失敗: {e}　モデル={active_model()}"
-                    "（何度も出るならモデルが大きすぎます。設定UIで小さいモデルに戻してください）")
-                return False
-            reply = to_board_text(raw)
-            dup = lambda r: any(too_similar(r, p) for p in recent)
-            if reply and dup(reply):   # 似た返事の連発は1回だけ言い直させる
+            if should_use_template(prompt_text, source):
+                reply = fallback_reply(intent, recent)
+                raw = reply
+                route = "template"
+            else:
                 try:
-                    raw = ollama_chat(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。")
-                    reply = to_board_text(raw)
+                    raw = gen_reply(hist, prompt_text, intent=intent)
                 except Exception as e:
-                    log(f"言い直し失敗: {e}")
-            if not reply or dup(reply):
-                log(f"返答が重複/空のためスキップ: {raw!r}")
+                    log(f"ollama失敗: {e}　モデル={active_model()}"
+                        "（何度も出るならモデルが大きすぎます。設定UIで小さいモデルに戻してください）")
+                reply = to_board_text(raw)
+                if not _reply_usable(raw, reply, recent) and CFG.get("retry_bad_reply", True):
+                    try:
+                        retry_text = "前の出力は空・重複・タグ付き・説明文のいずれかで不適切でした。"
+                        retry_text += "内容を変えて、条件どおり短い一言だけ返してください。"
+                        raw = ollama_chat(hist, retry_text, intent=intent)
+                        reply = to_board_text(raw)
+                        route = "retry"
+                    except Exception as e:
+                        log(f"言い直し失敗: {e}")
+                if not _reply_usable(raw, reply, recent):
+                    reply = fallback_reply(intent, recent)
+                    raw = reply
+                    route = "fallback"
+            if not reply:
+                log(f"返答が空のためスキップ: {raw!r}")
                 return False
-            recent.append(reply)
             prefix = to_board_text(prefix) if prefix else None
             if prefix and not reply.lower().startswith(prefix.lower()):
                 reply = prefix + "、" + reply   # 長くてもページ送りが吸収する
@@ -2786,7 +2951,8 @@ def main():
                 time.sleep(0.5)
                 drain(tail.poll())
             _dots_stop()   # 表示と競合しないようjoinしてから書く
-            log(f"へんじ: {reply}  (raw: {raw.strip()[:60]!r})")
+            recent.append(reply)
+            log(f"へんじ[{route}]: {reply}  (raw: {raw.strip()[:60]!r})")
             pages = _paginate(reply, _page_limit())
             send_kat(pages[0], per_char=float(CFG.get("typing_speed", 0)))
             page_queue[:] = pages[1:]   # 続きは消灯タイミングで順に表示
@@ -2909,7 +3075,7 @@ def main():
                     win = float(CFG.get("listen_window", 0))
                     if win <= 0:
                         log(f"きいた({who},返答へ): {text}")
-                        say(tagged, exclude_last=(fresh[-1][2] == tagged), thinking=True)
+                        say(tagged, exclude_last=(fresh[-1][2] == tagged), thinking=True, source="heard")
                     else:
                         if pending is None:   # 話の途中で相槌を連発しない
                             aizuchi()
@@ -2925,7 +3091,7 @@ def main():
                                     float(CFG.get("listen_window", 0))):
                     target, excl = pending
                     pending = None
-                    say(target, exclude_last=excl, thinking=True)
+                    say(target, exclude_last=excl, thinking=True, source="heard")
             # フレンドが来たら気づく(1人1インスタンス1回、会話の切れ目だけ)
             quiet = (now - last_heard > 5
                      and now - last_reply > CFG["cooldown"]

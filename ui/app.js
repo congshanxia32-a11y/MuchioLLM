@@ -8,6 +8,7 @@ function toast(msg, err){
 let BOOT = null;
 const PERCENT_FIELDS = new Set(['reply_chance','friend_reply_chance','poke_chance','world_comment_chance','song_comment_chance']);
 const CHECK_FIELDS = new Set(['think','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
+  'weak_reply_guard','retry_bad_reply',
   'persona_character_enabled','persona_talk_enabled','persona_preferences_enabled','persona_free_text_enabled','persona_examples_enabled',
   'advanced_growth_enabled','advanced_sense_enabled','advanced_listener_enabled','advanced_rules_enabled','advanced_aizuchi_enabled','advanced_safety_enabled']);
 CHECK_FIELDS.add('core_prompt_enabled');
