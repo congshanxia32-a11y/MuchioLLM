@@ -91,14 +91,20 @@ assert "nick" not in g._state["people"]["usr_zz"]
 assert "greet" not in g._state["people"]["usr_zz"]
 
 # ---- 話者タグの真似剥がし: [friend]等を返事の頭から落とす(履歴の自己強化を断つ) ----
+_board_jp = lambda text: text if m.kanji_on() else m._kanji_to_hira(text)
 assert m.to_board_text("[friend] こんにちは") == "こんにちは"
 assert m.to_board_text("[ぎんこん] [friend] やあ") == "やあ"
+assert m.to_board_text("【AxioPt】 了解したよ!") == _board_jp("了解したよ!")
 assert m.to_board_text("かっこ[つき]のほんぶんはのこる") == "かっこ[つき]のほんぶんはのこる"
 
 # ---- 名前剥がし: ナレーションだけ剥がし、主語は残す ----
 assert m.to_board_text("むちこ、きょどる") == "きょどる"
+assert m.to_board_text("「むちこ」→「空気の密度が変化しているのは間違いないようだ。」") == _board_jp("空気の密度が変化しているのは間違いないようだ。")
+assert m.to_board_text("むちこ」「論理の欠落は即座に解消すべし") == _board_jp("論理の欠落は即座に解消すべし")
+assert m.to_board_text("むちこ") == "むちこ", "自己紹介で名前だけ返した場合は残す"
 assert m.to_board_text("むちこはかわいいよ") == "むちこはかわいいよ", m.to_board_text("むちこはかわいいよ")
 assert m.to_board_text("むちこがやるよ") == "むちこがやるよ"
+assert m.to_board_text("了解したよ!論理的なツッコミはやめるね。**むちこ**承知した。") == _board_jp("了解したよ!論理的なツッコミはやめるね。")
 
 # ---- 盤面センタリング(頭上表示) ----
 m.CFG["center_jp"], m.CFG["center_en"] = 16, 16

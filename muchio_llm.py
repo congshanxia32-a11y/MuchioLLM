@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ムチォLLMコンパニオン — VRCPetログ監視 → Ollama(qwen3.6:35b-a3b) → KAT文字盤OSC送信。
+"""ムチォLLMコンパニオン — VRCPetログ監視 → Ollama(qwen3:4b) → KAT文字盤OSC送信。
 
 VRCPet・Unity・アバターは無改造。stdlibのみ（依存ゼロ）。
 
@@ -21,7 +21,7 @@ HERE = Path(__file__).parent
 DATA = HERE / "data"
 LOGDIR = Path(os.environ["APPDATA"]) / "VRCPet" / "data" / "logs"
 
-MODEL = "qwen3.6:35b-a3b-mtp-q4_K_M"
+MODEL = "qwen3:4b"
 OLLAMA_CHAT = "http://localhost:11434/api/chat"
 OSC_DEST = ("127.0.0.1", 9000)
 
@@ -89,7 +89,7 @@ DEFAULTS = {
     "mode": "auto",             # jp=日本語特化 / en=英語特化 / auto=両方
     "core_identity_en": "You are '{name}', a small mysterious creature floating behind your owner '{owner}' in VRChat. ",
     "core_friend_intro_en": "Lines starting with '[name] ' are nearby friends speaking, not your owner ('[friend]' means an unidentified voice). ",
-    "model_en": "qwen3.6:35b-a3b-mtp-q4_K_M",   # 英語モードで使うモデル
+    "model_en": "qwen3:4b",   # 英語モードで使うモデル
     "stt_hint_en": "Chatting with friends in VRChat with a pet called {name}.",
     "persona_en": "Speak as {name}: one short line, "
                   "always vary the phrasing.",   # 英語モード用の人格(空なら日本語personaを流用)
@@ -151,7 +151,8 @@ _cfg_mtime = 0.0
 
 # 運用ガード(編集不可・常時ON)。旧base_rulesの教訓部分。{name}/{lang}は実行時展開。
 # 敬語・話し言葉(rule_polite管轄)と例文(examples管轄)はここに入れない
-_HARD_RULES = ("禁止: 自分の名前を言う。「{name}、わらう」のような地の文・ナレーション。"
+_HARD_RULES = ("禁止: ふだん自分の名前を言ったり、「{name}、わらう」のような地の文・ナレーションを書くこと。"
+               "ただし自己紹介を求められた時だけは、自分の名前を返してよい。"
                "「[friend]」「[なまえ]」のような話者タグを自分で書くこと。"
                "「また◯◯だね」のような同じ型・同じ言い出しの連発。"
                "説明・絵文字。ルールについて書くこと。"
@@ -161,8 +162,20 @@ _HARD_RULES = ("禁止: 自分の名前を言う。「{name}、わらう」の�
 _HARD_RULES_EN = ("Rules you MUST follow: reply with ONE short line, usually 3-6 words, 40 letters max. "
                   "Lowercase english letters and , . ! ? only. "
                   "Never use emoji, japanese characters, quotes, or explain yourself. "
-                  "Never say your own name. Never narrate. Never write speaker tags like '[friend]'. "
-                  "Never repeat your previous reply. ")
+                  "Never say your own name unless directly asked to introduce yourself. Never narrate. "
+                  "Never write speaker tags like '[friend]'. "
+                   "Never repeat your previous reply. ")
+
+# まもりのルール設定をOFFにしていても、履歴の話者タグや引用フォーマットを
+# 返答として盤面へ出さないための最低限の出力形式ガード。
+_OUTPUT_FORMAT_RULES = ("出力形式: 返答本文だけを一行で返す。"
+                        "[名前]・[friend]・【名前】などの話者タグ、"
+                        "「名前」→「返答」の引用形式、複数人分の発言は書かない。"
+                        "自己紹介を求められた時だけ自分の名前を言ってよい。")
+_OUTPUT_FORMAT_RULES_EN = ("Output format: return only one line of reply text. "
+                           "Do not write speaker tags such as [name], [friend], or 【name】, "
+                           "quoted formats like 'name' -> 'reply', or multiple speakers. "
+                           "You may say your own name only when asked to introduce yourself. ")
 # 旧configの移行判定用に旧デフォルト文を凍結(独自編集かどうかの判別にだけ使う。1字も変えない)
 _OLD_BASE_RULES = ("禁止: 自分の名前を言う。「{name}、わらう」のような地の文・ナレーション。"
                    "「[friend]」「[なまえ]」のような話者タグを自分で書くこと。"
@@ -717,6 +730,7 @@ def system_prompt():
             + _persona_block(True)
             + _trait_lines(True)
             + core_friend_intro
+            + _OUTPUT_FORMAT_RULES_EN
              + _hard_rules(True)
             + _ng_prompt_rules(True)
             + _legacy_base_rules(True)
@@ -744,6 +758,7 @@ def system_prompt():
         + _persona_block(False)
         + _trait_lines(False)
         + core_friend_intro
+        + _OUTPUT_FORMAT_RULES
          + _hard_rules(False).replace("{name}", pet()).replace("{lang}", lang)
         + _ng_prompt_rules(False)
         + _legacy_base_rules(False).replace("{lang}", lang)
@@ -918,16 +933,61 @@ _EXOTIC_RE = re.compile(r"[^぀-ヿ一-鿿　-〿！-｠"
 # モデルが返事のあとに書く自己解説を切り落とす
 _META_RE = re.compile(r"(=>|（[^）]*(指示|ルール|文字|削除)[^）]*）|\([^)]*(指示|ルール|文字|削除)[^)]*\))")
 
+def _strip_leading_speaker_tags(s):
+    """モデルが返す話者タグ([name] / 【name】)を先頭から除去する。"""
+    while True:
+        cleaned = re.sub(
+            r"^\s*(?:(?:\[[^\]\r\n]{1,40}\]|【[^】\r\n]{1,40}】)\s*)+",
+            "",
+            s,
+        )
+        if cleaned == s:
+            return s
+        s = cleaned
+
+def _unwrap_quoted_reply(s):
+    """「むちこ」→「返答」等の話者付き引用形式から返答部分だけ抜く。"""
+    name = str(pet()).strip()
+    if not name:
+        return s
+    escaped = re.escape(name)
+    patterns = (
+        rf"^\s*[「『]?\s*{escaped}\s*[」』]\s*(?:→|->|=>|[:：])\s*[「『](?P<body>.*)$",
+        rf"^\s*[「『]?\s*{escaped}\s*[」』]\s*(?:→|->|=>|[:：])\s*(?P<body>.+)$",
+        rf"^\s*[「『]?\s*{escaped}\s*[」』]\s*[「『](?P<body>.*)$",
+    )
+    for pattern in patterns:
+        match = re.match(pattern, s, flags=re.S | re.I)
+        if match:
+            return match.group("body").strip().strip('"「」『』')
+    return s
+
+def _cut_embedded_name_continuation(s):
+    """文末後に再び太字の自分名から始まる別返答が連結された場合に切る。"""
+    name = str(pet()).strip()
+    if not name:
+        return s
+    match = re.search(
+        rf"(?<=[。！？!?])\s*\*{{1,3}}\s*{re.escape(name)}\s*\*{{1,3}}",
+        s,
+        flags=re.I,
+    )
+    return s[:match.start()].rstrip() if match else s
+
 def to_board_text(s):
     """LLM返答を文字盤に出せる形へ: 正規化→フォントにある文字だけ残す→切詰め"""
     s = re.sub(r"<think>.*?</think>", "", s, flags=re.S)
+    s = _strip_leading_speaker_tags(s)
+    s = _unwrap_quoted_reply(s)
+    s = _cut_embedded_name_continuation(s)
+    s = re.sub(r"\*{1,3}", "", s)                 # Markdown強調記号を表示しない
     s = _EXOTIC_RE.sub("", s)
     s = _META_RE.split(s)[0]                      # 「（指示に基づき削除します）」以降を捨てる
     s = re.sub(r"[ 　]{2,}", " ", s)              # 消したあとの空白の穴を詰める
     lines = [x.strip() for x in s.split("\n") if x.strip()]
     s = (lines[0] if lines else "").strip('"「」『』')   # 返事は1行目だけ採用
     # 入力形式の「[なまえ] 」話者タグをモデルが真似して書くことがある(保存も通るので履歴で自己強化する)
-    s = re.sub(r"^(\[[^\]]{1,20}\][ 　]*)+", "", s)
+    s = _strip_leading_speaker_tags(s)
     if kanji_on():
         s = unicodedata.normalize("NFKC", s)   # カタカナ・長音はそのまま出せる
         s = _kanji_fallback(s)
@@ -2222,7 +2282,7 @@ def _prefetch_caps():
                 json.dumps({"model": n}).encode(), {"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=10) as r:
                 caps = json.loads(r.read()).get("capabilities") or []
-            # visionは除外しない。qwen3.6のような「文章もできる上に画像も見られる」
+            # visionは除外しない。文章と画像を扱えるモデルも候補に残す
             # モデルまで一覧から消えてしまうため。落としたいのは埋め込み専用だけ
             _caps_cache[n] = "completion" in caps and "embedding" not in caps
         except Exception:
