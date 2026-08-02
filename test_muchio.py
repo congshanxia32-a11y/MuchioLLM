@@ -470,6 +470,16 @@ try:
     _ng_prompt = m.system_prompt()
     assert "BadWord" in _ng_prompt and "関連する内容には触れない" in _ng_prompt, _ng_prompt
     m.CFG["advanced_safety_enabled"], m.CFG["mode"] = _ng_safety_bak, _ng_mode_bak
+    _ng_words_bak, _ng_chat_bak = m.CFG["ng_words"], m.ollama_chat
+    _ng_calls = []
+    def _fake_ng_chat(history, user_text, timeout=90):
+        _ng_calls.append(user_text)
+        return "静寂と沈黙の話" if len(_ng_calls) == 1 else "別の話題だよ"
+    m.CFG["ng_words"] = "静寂,沈黙"
+    m.ollama_chat = _fake_ng_chat
+    assert m.gen_reply([], "ひとこと") == "別の話題だよ"
+    assert len(_ng_calls) == 2, _ng_calls
+    m.CFG["ng_words"], m.ollama_chat = _ng_words_bak, _ng_chat_bak
     _ng_kanji_bak = m.CFG.get("kanji_mode")
     m.CFG["kanji_mode"] = True
     assert "沈黙" in m.to_board_text("雨音と沈黙の対比が興味深い。"), "禁止ワードを表示置換している"

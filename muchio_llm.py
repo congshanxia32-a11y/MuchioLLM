@@ -907,6 +907,10 @@ def _ng_words():
 def _ng_word_matches(text, word):
     return len(str(word).strip()) >= 2 and _has_word(str(text), str(word).strip())
 
+def _ng_output_hits(text):
+    """Return configured NG words found in an untrusted model response."""
+    return [word for word in _ng_words() if _ng_word_matches(text, word)]
+
 # ひらがな/カタカナ/漢字/日本語約物/ASCII 以外(絵文字・アラビア文字など)を落とす。
 # pykakasiは絵文字が混ざると直前の語を複製するバグがあるので、変換前に必ず通す
 _EXOTIC_RE = re.compile(r"[^぀-ヿ一-鿿　-〿！-｠"
@@ -2079,7 +2083,17 @@ def gen_reply(history, user_text, timeout=90):
         user_text += " (reply in lowercase english, max 6 words)"
     elif mode != "jp" and plain and sum(c.isascii() for c in plain) > len(plain) * 0.8:
         user_text += " (answer in english, lowercase, max 10 letters)"
-    return ollama_chat(history, user_text, timeout=timeout)
+    retry = ("直前の生成は保存・表示禁止の言葉を含んでいたため破棄した。"
+             "禁止ワード、その言い換え、読み方、関連話題、禁止ルールの説明や自己分析には触れず、"
+             "まったく別の自然な短文だけを返して。")
+    for attempt in range(3):
+        raw = ollama_chat(history, user_text if attempt == 0 else retry, timeout=timeout)
+        blocked = _ng_output_hits(raw)
+        if not blocked:
+            return raw
+        if attempt == 2:
+            log("禁止ワードを含む返答を3回検出したため表示せず破棄")
+    return ""
 
 def warmup():
     log(f"ollama ウォームアップ中 ({active_model()}, keep_alive=-1)...")
@@ -2854,7 +2868,7 @@ def main():
             dup = lambda r: any(too_similar(r, p) for p in recent)
             if reply and dup(reply):   # 似た返事の連発は1回だけ言い直させる
                 try:
-                    raw = ollama_chat(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。")
+                    raw = gen_reply(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。")
                     reply = to_board_text(raw)
                 except Exception as e:
                     log(f"言い直し失敗: {e}")
