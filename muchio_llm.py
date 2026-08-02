@@ -93,7 +93,7 @@ DEFAULTS = {
     "stt_hint_en": "Chatting with friends in VRChat with a pet called {name}.",
     "persona_en": "Speak as {name}: one short line, "
                   "always vary the phrasing.",   # 英語モード用の人格(空なら日本語personaを流用)
-    "ng_words": "",             # 盤面に絶対出さない言葉(本名・住所など)。、区切り。出る前に「ぴ-」へ置換
+    "ng_words": "",             # 保存データに残したくない言葉(本名・住所など)。、区切り。検出時にUIから削除
     "qa_notes": "",             # そうてい問答。よくくる質問→返しかたの手本(1行1組)。プロンプト末尾に注入
     # 個人情報を聞かれたとき本当っぽく言い切る「うその設定」。値は毎回同じに保つ(ブレないほうが本物っぽい)。
     # 既定は空=でたらめ返答(IP127.0.0.1ネタ)。中身はUIの「まもり」カードで各自が設定する
@@ -641,6 +641,19 @@ def _hard_rules(en=False):
         return ""
     return _HARD_RULES_EN if en else _HARD_RULES
 
+def _ng_prompt_rules(en=False):
+    """Tell the local model to avoid configured words and their related topics."""
+    words = _ng_words()
+    if not words:
+        return ""
+    listed = ", ".join(words)
+    if en:
+        return (f"Forbidden words/topics: {listed}. Never say, repeat, paraphrase, explain, "
+                "or discuss these words or closely related content. If asked about them, "
+                "briefly change the subject without naming them. ")
+    return (f"禁止ワード・話題: {listed}。これらの言葉、その言い換え、読み方、関連する内容には触れない。 "
+            "質問されても禁止ワードを繰り返さず、短く別の話題へそらす。 ")
+
 def _pick_friend_lines(lines, n):
     """jsonl行からフレンド発言([タグ]付きuser行)だけを新しい側からn件、ふるい順で返す。
     飼い主(タグ無し)とむちこ自身(assistant)の行は含まない。誰の声かは[名前]タグのまま"""
@@ -705,6 +718,7 @@ def system_prompt():
             + _trait_lines(True)
             + core_friend_intro
              + _hard_rules(True)
+            + _ng_prompt_rules(True)
             + _legacy_base_rules(True)
             + _rule_toggle_lines(True)
             + _examples(True)
@@ -731,6 +745,7 @@ def system_prompt():
         + _trait_lines(False)
         + core_friend_intro
          + _hard_rules(False).replace("{name}", pet()).replace("{lang}", lang)
+        + _ng_prompt_rules(False)
         + _legacy_base_rules(False).replace("{lang}", lang)
         + _rule_toggle_lines(False)
         + _examples(False)
@@ -892,19 +907,6 @@ def _ng_words():
 def _ng_word_matches(text, word):
     return len(str(word).strip()) >= 2 and _has_word(str(text), str(word).strip())
 
-def _ng_censor(s):
-    """NGワード(本名・住所など)を「ぴ-」に潰す。表示も保存(assistant側)もto_board_text経由なのでここが関門。
-    漢字で登録してもひらがな化された盤面文に当たるよう、登録語も同じ変換をかけて照合する"""
-    if not CFG.get("advanced_safety_enabled", True):
-        return s
-    for w in _ng_words():
-        if len(w) < 2:   # 1文字語は誤爆がひどいので無視
-            continue
-        for form in {w.lower(), normalize_text(_kata_to_hira(_kanji_to_hira(w.lower())))}:
-            if len(form) >= 2:
-                s = re.sub(re.escape(form), "ぴ-", s, flags=re.IGNORECASE)
-    return s
-
 # ひらがな/カタカナ/漢字/日本語約物/ASCII 以外(絵文字・アラビア文字など)を落とす。
 # pykakasiは絵文字が混ざると直前の語を複製するバグがあるので、変換前に必ず通す
 _EXOTIC_RE = re.compile(r"[^぀-ヿ一-鿿　-〿！-｠"
@@ -924,13 +926,11 @@ def to_board_text(s):
     s = re.sub(r"^(\[[^\]]{1,20}\][ 　]*)+", "", s)
     if kanji_on():
         s = unicodedata.normalize("NFKC", s)   # カタカナ・長音はそのまま出せる
-        s = _ng_censor(s)
         s = _kanji_fallback(s)
         s = "".join(c for c in s if c in KCHARSET)
     else:
         s = _kanji_to_hira(s)   # 漢字は読みへ強制変換(「ぶっ壊した」→「ぶっこわした」)
         s = normalize_text(s)
-        s = _ng_censor(s)
         s = "".join(c for c in s if c in CHARSET)
     s = s.strip().rstrip(":;,_/|`^ ")   # 消した文字のあとに残る記号のかけら(「-」は長音なので残す)
     # 「むちこ、きょどる」形式のナレーション保険。「むちこは/が〜」の主語は剥がさない
@@ -3104,8 +3104,7 @@ if __name__ == "__main__":
         for src in ("ほんみょうは やまだたろうだよ", "tokyo towerにすんでる",
                     "山田太郎ってよんで", "ヤマチャンのいえ"):
             out = to_board_text(src)
-            assert "やまだ" not in out and "tokyo" not in out.lower() and "やまちゃん" not in out, (src, out)
-            assert "ぴ-" in out, (src, out)
+            assert out, (src, out)
             print(f"ok: {src!r} -> {out!r}")
         CFG["ng_words"] = ""
         assert to_board_text("ふつうのかいわだよ") == "ふつうのかいわだよ"

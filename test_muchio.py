@@ -464,6 +464,16 @@ try:
     m._save_manual_words(["badword manual", "safe note"])
     m._word_counts = lambda: {"BadWord": 4, "安全": 3}
     assert m._ng_words() == ["BadWord", "危険"], m._ng_words()
+    _ng_safety_bak, _ng_mode_bak = m.CFG.get("advanced_safety_enabled"), m.CFG.get("mode")
+    m.CFG["advanced_safety_enabled"] = True
+    m.CFG["mode"] = "jp"
+    _ng_prompt = m.system_prompt()
+    assert "BadWord" in _ng_prompt and "関連する内容には触れない" in _ng_prompt, _ng_prompt
+    m.CFG["advanced_safety_enabled"], m.CFG["mode"] = _ng_safety_bak, _ng_mode_bak
+    _ng_kanji_bak = m.CFG.get("kanji_mode")
+    m.CFG["kanji_mode"] = True
+    assert "沈黙" in m.to_board_text("雨音と沈黙の対比が興味深い。"), "禁止ワードを表示置換している"
+    m.CFG["kanji_mode"] = _ng_kanji_bak
     _ng_hits = m._ng_hits()["words"]
     _ng_by_word = {x["word"]: x for x in _ng_hits}
     assert _ng_by_word["BadWord"]["conversation_count"] == 1, _ng_by_word
