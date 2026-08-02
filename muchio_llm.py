@@ -9,7 +9,7 @@ VRCPet・Unity・アバターは無改造。stdlibのみ（依存ゼロ）。
   python muchio_llm.py --say てすと    # 文字盤に一発表示（動作確認用）
   python muchio_llm.py --ask こんにちは # LLM返答を生成して表示のみ（送信しない）
 """
-import difflib, hashlib, json, os, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request
+import difflib, hashlib, json, math, os, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -152,6 +152,118 @@ DEFAULTS = {
 }
 CFG = dict(DEFAULTS)
 _cfg_mtime = 0.0
+
+# 設定の持ち運び用カテゴリ。画面のカテゴリと同じ単位で管理し、
+# 新しい設定キーが増えたときは「その他」に自動的に入るようにする。
+SETTING_CATEGORY_DEFS = [
+    ("profile", "なまえ", ("pet_name", "pet_name_en", "owner_name")),
+    ("core", "基本説明", ("core_prompt_enabled", "core_identity", "core_friend_intro",
+                              "core_identity_en", "core_friend_intro_en")),
+    ("talk", "おしゃべり", ("reply_chance", "friend_reply_chance", "poke_chance",
+                               "cooldown", "listen_window", "idle_seconds", "friend_context",
+                               "max_reply", "board_cells", "kanji_mode", "osc_proxy",
+                               "typing_speed", "center_jp", "center_en")),
+    ("brain", "あたま(LLM)", ("mode", "model", "model_en", "think", "weak_reply_guard",
+                                "retry_bad_reply", "fallback_templates", "fallback_templates_en")),
+    ("persona-character", "じんかく・せいかく", ("persona_character_enabled", "trait_smart",
+                                                   "trait_mean", "trait_energy", "trait_instinct",
+                                                   "trait_optimism", "trait_weight")),
+    ("persona-talk", "じんかく・はなしかた", ("persona_talk_enabled", "trait_verbose", "trait_hard")),
+    ("persona-preferences", "じんかく・こだわり", ("persona_preferences_enabled", "rule_trivia",
+                                                      "rule_asks", "rule_polite", "rule_names")),
+    ("persona-free-text", "じんかく・じゆうテキスト", ("persona_free_text_enabled", "persona",
+                                                         "persona_en", "persona_weight")),
+    ("persona-examples", "じんかく・れいぶん", ("persona_examples_enabled", "examples", "examples_en")),
+    ("advanced-rules", "まもりのルール", ("advanced_rules_enabled", "base_rules", "base_rules_en",
+                                             "rules", "rules_en")),
+    ("advanced-aizuchi", "あいづち", ("advanced_aizuchi_enabled", "aizuchi", "aizuchi_en")),
+    ("advanced-safety", "まもり", ("advanced_safety_enabled", "fake_profile", "fake_profile_en",
+                                      "ng_words", "qa_notes")),
+    ("advanced-growth", "そだち", ("advanced_growth_enabled", "bond_gain", "bond_halflife_days",
+                                      "tier_regular", "absence_days", "auto_adopt_days")),
+    ("advanced-sense", "せかい", ("advanced_sense_enabled", "world_comment_chance",
+                                     "song_comment_chance", "care_hours", "care_hour", "diary")),
+    ("advanced-listener", "耳(リスナー)", ("advanced_listener_enabled", "rms_gate", "silence_end",
+                                              "stt_hint", "stt_hint_en", "voice_threshold")),
+    ("vrcx", "なかま / VRCX連携", ("vrcx_enabled", "greet_friends")),
+    ("memory", "記憶", ("memory_conversation_enabled", "memory_diary_enabled", "knowledge")),
+    ("memory-words", "単語の記憶", ("memory_words_enabled",)),
+]
+_SETTING_CATEGORY_BY_KEY = {
+    key: category_id
+    for category_id, _label, keys in SETTING_CATEGORY_DEFS
+    for key in keys
+}
+
+
+def _setting_category_payload():
+    """設定転送UIに渡すカテゴリ一覧。未分類のキーも漏らさない。"""
+    known = set(DEFAULTS) | set(CFG)
+    extras = sorted(known - set(_SETTING_CATEGORY_BY_KEY))
+    defs = list(SETTING_CATEGORY_DEFS)
+    if extras:
+        defs.append(("other", "その他", tuple(extras)))
+    return [{"id": category_id, "label": label, "keys": list(keys)}
+            for category_id, label, keys in defs]
+
+
+def _settings_for_categories(categories):
+    """現在のCFGから指定カテゴリだけを抜き出す。空指定は全カテゴリ。"""
+    payload = _setting_category_payload()
+    valid = {item["id"] for item in payload}
+    selected = [category_id for category_id in categories if category_id in valid]
+    if not selected:
+        selected = [item["id"] for item in payload]
+    keys = {key for item in payload if item["id"] in selected for key in item["keys"]}
+    return selected, {key: CFG[key] for key in sorted(keys) if key in CFG}
+
+
+_IMPORT_RANGES = {
+    "reply_chance": (0.0, 1.0), "friend_reply_chance": (0.0, 1.0),
+    "poke_chance": (0.0, 1.0), "cooldown": (0.0, 300.0),
+    "listen_window": (0.0, 30.0), "idle_seconds": (0.0, 3600.0),
+    "friend_context": (0, 50), "max_reply": (10, 128), "board_cells": (64, 128),
+    "typing_speed": (0.0, 0.5), "center_jp": (0, 31), "center_en": (0, 31),
+    "bond_gain": (0.0, 5.0), "bond_halflife_days": (0.5, 60.0),
+    "tier_regular": (2, 100), "absence_days": (1, 365), "auto_adopt_days": (0, 100),
+    "world_comment_chance": (0.0, 1.0), "song_comment_chance": (0.0, 1.0),
+    "care_hours": (0.0, 24.0), "care_hour": (0, 23), "rms_gate": (50, 5000),
+    "silence_end": (0.2, 3.0), "voice_threshold": (0.3, 0.9),
+}
+_IMPORT_MAX_LENGTHS = {
+    "pet_name": 16, "pet_name_en": 32, "owner_name": 32,
+    "core_identity": 500, "core_friend_intro": 500, "core_identity_en": 500,
+    "core_friend_intro_en": 500, "persona": 500, "persona_en": 500,
+    "ng_words": 500, "qa_notes": 1500, "fake_profile": 500, "fake_profile_en": 500,
+    "rules": 1500, "rules_en": 1500, "examples": 600, "examples_en": 600,
+    "aizuchi": 300, "aizuchi_en": 300, "stt_hint": 200, "stt_hint_en": 200,
+    "model": 120, "model_en": 120, "fallback_templates": 1500,
+    "fallback_templates_en": 1500,
+}
+
+
+def _sanitize_import_value(key, value):
+    """エクスポート由来の値を型・範囲つきでCFGへ戻す。"""
+    current = CFG.get(key, DEFAULTS.get(key))
+    if isinstance(current, bool):
+        if not isinstance(value, bool):
+            raise ValueError(f"{key} は真偽値ではありません")
+        return value
+    if isinstance(current, (int, float)) and not isinstance(current, bool):
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+            raise ValueError(f"{key} は数値ではありません")
+        lo, hi = _IMPORT_RANGES.get(key, (None, None))
+        value = min(hi, max(lo, value)) if lo is not None else value
+        return int(round(value)) if isinstance(current, int) else float(value)
+    if isinstance(current, str):
+        if not isinstance(value, str):
+            raise ValueError(f"{key} は文字列ではありません")
+        if key == "mode" and value not in ("auto", "jp", "en"):
+            raise ValueError("mode が不正です")
+        if key in ("trait_weight", "persona_weight") and value not in ("low", "mid", "high"):
+            raise ValueError(f"{key} が不正です")
+        return value[:_IMPORT_MAX_LENGTHS.get(key, 4000)]
+    return value
 
 # 運用ガード(編集不可・常時ON)。旧base_rulesの教訓部分。{name}/{lang}は実行時展開。
 # 敬語・話し言葉(rule_polite管轄)と例文(examples管轄)はここに入れない
@@ -2485,6 +2597,7 @@ def _bootstrap_data():
                            for v, label in (("low", "よわめ"),
                                             ("mid", "ふつう"),
                                             ("high", "つよめ"))],
+        "setting_categories": _setting_category_payload(),
     }
 
 _RESET = threading.Event()   # リセット要求。mainループが安全なタイミングで処理する
@@ -2506,6 +2619,15 @@ class _UIHandler(BaseHTTPRequestHandler):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_download_json(self, obj, filename):
+        body = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -2548,6 +2670,17 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if path == "/bootstrap":
             self._send_json(_bootstrap_data())
+            return
+        if path == "/settings_export":
+            categories = parse_qs(query).get("categories", [""])[0].split(",")
+            selected, settings = _settings_for_categories(categories)
+            self._send_download_json({
+                "format": "muchiko-settings",
+                "version": 1,
+                "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "categories": selected,
+                "settings": settings,
+            }, "muchiko-settings.json")
             return
         if path == "/log":
             self._send_html(_log_html())
@@ -2630,6 +2763,47 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/update":
             self._send_json(_run_update())
+            return
+        if self.path == "/settings_import":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                request = json.loads(self.rfile.read(n).decode("utf-8"))
+                if not isinstance(request, dict):
+                    raise ValueError("読み込みデータの形式が不正です")
+                document = request.get("document") or {}
+                if not isinstance(document, dict):
+                    raise ValueError("設定ファイルの形式が不正です")
+                if document.get("format") not in (None, "muchiko-settings"):
+                    raise ValueError("むちこの設定ファイルではありません")
+                settings = document.get("settings") if isinstance(document, dict) else None
+                if not isinstance(settings, dict):
+                    # config.jsonそのものも読み込めるようにする。
+                    settings = document if isinstance(document, dict) else {}
+                categories = request.get("categories") or document.get("categories") or []
+                selected, allowed = _settings_for_categories(categories)
+                load_cfg()
+                if request.get("cfg_mtime") and request["cfg_mtime"] != str(_cfg_mtime):
+                    self._send_json({"ok": False, "err": "conflict"}, 409)
+                    return
+                merged = dict(CFG)
+                imported, ignored = [], []
+                for key, value in settings.items():
+                    if key not in allowed:
+                        ignored.append(key)
+                        continue
+                    if key not in CFG and key not in DEFAULTS:
+                        ignored.append(key)
+                        continue
+                    merged[key] = _sanitize_import_value(key, value)
+                    imported.append(key)
+                if CONFIG.exists():
+                    shutil.copy2(CONFIG, _backup_path(CONFIG, "import"))
+                CONFIG.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+                load_cfg()
+                self._send_json({"ok": True, "mtime": str(_cfg_mtime), "categories": selected,
+                                 "imported": sorted(imported), "ignored": sorted(ignored)})
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                self._send_json({"ok": False, "err": str(e)}, 400)
             return
         n = int(self.headers.get("Content-Length") or 0)
         q = parse_qs(self.rfile.read(n).decode("utf-8"))

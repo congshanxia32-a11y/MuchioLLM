@@ -53,7 +53,7 @@
 </ol>
 </details></section>
 
-<section class="card ts"><h2>なまえ</h2>
+<section class="card ts setting-category" data-category="profile"><h2>なまえ</h2>
 <p class="desc">ペットとあなたのなまえ。よびかけ判定とおしゃべりに使います</p>
 <div class="field"><label>ペットのなまえ(かな)</label>
 <input type="text" name="pet_name" value="" maxlength="16">
@@ -66,7 +66,7 @@
 <small>あなたのVRChat表示名。だれが飼い主かをペットに教えます</small></div>
 </section>
 
-<section class="card wide ts"><h2>基本説明(LLMに見せる)</h2>
+<section class="card wide ts setting-category" data-category="core"><h2>基本説明(LLMに見せる)</h2>
 <p class="desc">ペットの立ち位置や、フレンド発言の見分け方。ここは自由に書き換えられます。</p>
 <label class="check"><input type="checkbox" name="core_prompt_enabled"> 基本説明をLLMに渡す</label>
 <div class="field"><label>日本語</label>
@@ -80,7 +80,7 @@
 <textarea name="core_friend_intro_en" rows="2"></textarea></div>
 </section>
 
-<section class="card ts"><h2>おしゃべり</h2>
+<section class="card ts setting-category" data-category="talk"><h2>おしゃべり</h2>
 <p class="desc">どのくらいの頻度・長さでしゃべるか。自発話や割り込みもここで設定します</p>
 <div class="field"><div class="lr"><label>あなたへの反応率</label><output>%</output></div>
 <input type="range" name="reply_chance" min="0" max="100" step="5" value="">
@@ -122,7 +122,7 @@
 <small>フォントの見た目幅が違うので別に調整できます</small></div>
 </section>
 
-<section class="card ts"><h2>あたま(LLM)</h2>
+<section class="card ts setting-category" data-category="brain"><h2>あたま(LLM)</h2>
 <p class="desc">かんがえるモデルとことばの切り替え</p>
 <div class="field"><label>モード</label>
 <select name="mode">
@@ -359,6 +359,25 @@
 </section>
 
 </div>
+
+<section class="card wide" id="settings-transfer">
+<h2>設定の書き出し / 読み込み</h2>
+<p class="desc">選んだカテゴリだけをJSONファイルに保存したり、別のむちこへ読み込めます。選ばなかったカテゴリは変更しません。</p>
+<div class="transfer-columns">
+<div class="transfer-box">
+<h3>書き出し</h3>
+<div id="settings-export-categories" class="transfer-category-list"></div>
+<button type="button" id="settings-export">選んだカテゴリを書き出す</button>
+</div>
+<div class="transfer-box">
+<h3>読み込み</h3>
+<input type="file" id="settings-import-file" accept="application/json,.json">
+<div id="settings-import-categories" class="transfer-category-list"></div>
+<button type="button" id="settings-import">選んだカテゴリを読み込む</button>
+<small>読み込み前に、現在の設定ファイルのバックアップを自動で作ります。</small>
+</div>
+</div>
+</section>
 </main>
 
 <div class="savebar" id="savebar">

@@ -102,8 +102,62 @@ function applyBootstrap(d){
   CHECK_FIELDS.forEach(k=>setField(form, k, !!cfg[k]));
   initCategoryToggles();
   initExternalToggles();
+  renderSettingsTransfer(d.setting_categories || []);
   form.cfg_mtime.value = d.cfg_mtime || '';
   initPresets();
+}
+
+function renderSettingsTransfer(categories){
+  const render = (targetId, prefix) => {
+    const box = $(targetId);
+    if(!box) return;
+    box.innerHTML = categories.map(c =>
+      `<label class="transfer-category"><input type="checkbox" data-transfer-category="${esc(c.id)}" data-transfer-group="${prefix}" checked> ${esc(c.label)}</label>`
+    ).join('');
+  };
+  render('settings-export-categories', 'export');
+  render('settings-import-categories', 'import');
+  const selected = prefix => Array.from(document.querySelectorAll(`[data-transfer-group="${prefix}"]:checked`))
+    .map(el=>el.dataset.transferCategory);
+  const exportButton = $('settings-export');
+  if(exportButton && !exportButton.dataset.bound){
+    exportButton.dataset.bound = '1';
+    exportButton.addEventListener('click', async ()=>{
+      const cats = selected('export');
+      if(!cats.length){ toast('書き出すカテゴリをひとつ選んでください', true); return; }
+      try{
+        const r = await fetch('/settings_export?categories='+encodeURIComponent(cats.join(',')));
+        if(!r.ok) throw new Error('export');
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob), a = document.createElement('a');
+        a.href = url; a.download = 'muchiko-settings.json'; a.click();
+        setTimeout(()=>URL.revokeObjectURL(url), 1000);
+        toast('選んだカテゴリを書き出しました');
+      }catch(_){ toast('設定を書き出せませんでした', true); }
+    });
+  }
+  const importButton = $('settings-import');
+  if(importButton && !importButton.dataset.bound){
+    importButton.dataset.bound = '1';
+    importButton.addEventListener('click', async ()=>{
+      const file = $('settings-import-file')?.files?.[0];
+      const cats = selected('import');
+      if(!file){ toast('読み込むJSONファイルを選んでください', true); return; }
+      if(!cats.length){ toast('読み込むカテゴリをひとつ選んでください', true); return; }
+      if(!confirm('選んだカテゴリを読み込みます。現在の設定はバックアップされます。よろしいですか？')) return;
+      try{
+        const documentData = JSON.parse(await file.text());
+        const r = await fetch('/settings_import', {method:'POST', headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({document:documentData, categories:cats, cfg_mtime:$('cfg').cfg_mtime.value})});
+        const d = await r.json();
+        if(r.status === 409){ toast('べつの画面で設定が変わっています。ページを読み込み直してください', true); return; }
+        if(!r.ok || !d.ok) throw new Error(d.err || 'import');
+        await loadBootstrap();
+        loadM();
+        toast(`設定を読み込みました(${d.imported.length}項目)`);
+      }catch(e){ toast('設定を読み込めませんでした: '+(e.message || ''), true); }
+    });
+  }
 }
 async function loadBootstrap(){
   try{

@@ -139,5 +139,12 @@ body.tab-j .ts,body.tab-j .ta{display:none}
 .setting-category.is-off .category-body{opacity:.42;filter:grayscale(.7)}
 .setting-category.is-off .category-body input,.setting-category.is-off .category-body select,.setting-category.is-off .category-body textarea{pointer-events:none}
 .setting-category.is-off .category-toggle{color:var(--faint)}
+.transfer-columns{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:10px}
+.transfer-box{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.transfer-box h3{margin:0 0 8px}
+.transfer-box small{display:block;margin-top:8px;color:var(--faint)}
+.transfer-category-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:5px 10px;margin:8px 0 12px}
+.transfer-category{display:flex;align-items:center;gap:6px;font-size:.82em;color:var(--dim)}
 @media (max-width:720px){.card{padding:13px 14px} main{padding:12px 12px 110px} .hwrap{padding:8px 12px}
- .update-card{align-items:stretch;flex-direction:column}.update-actions{justify-content:flex-start}}
+ .update-card{align-items:stretch;flex-direction:column}.update-actions{justify-content:flex-start}
+ .transfer-columns{grid-template-columns:1fr}.transfer-category-list{grid-template-columns:1fr}}
