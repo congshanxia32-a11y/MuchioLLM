@@ -286,6 +286,8 @@ m.CFG.clear(); m.CFG.update(_cfg_bak)
 # ---- ルール文のconfig化: 編集がプロンプトに反映され、{fake}が展開される ----
 _cfg_bak2 = dict(m.CFG)
 m.CFG["mode"] = "jp"
+m.CFG["advanced_rules_enabled"] = True
+m.CFG["advanced_safety_enabled"] = True
 m.CFG["rules"] = "てすとルール。{fake}おわり。"
 m.CFG["fake_profile"] = "本名=ほげ"
 sp = m.system_prompt()
@@ -366,7 +368,8 @@ m.CFG["trait_weight"] = _tw_bak if _tw_bak is not None else m.DEFAULTS["trait_we
 _tkeys = {k for k, *_ in m.TRAITS}
 _ckeys = {t[0] for t in m.RULES_TOGGLES}
 for _n, _p in m.PRESETS.items():
-    assert set(_p) == {"persona", "persona_en", "examples", "examples_en", "traits", "checks"}, _n
+    assert set(_p) <= {"persona", "persona_en", "examples", "examples_en", "traits", "checks", "description"}, _n
+    assert {"persona", "persona_en", "examples", "examples_en", "traits", "checks"} <= set(_p), _n
     assert _p["persona"] and _p["examples"] and _p["examples_en"], f"{_n}: 空欄"
     assert set(_p["traits"]) <= _tkeys and all(0 <= v <= 100 for v in _p["traits"].values()), _n
     assert set(_p["checks"]) <= _ckeys, _n
@@ -376,6 +379,10 @@ assert m.PRESETS["バニラ"]["persona"] == m.DEFAULTS["persona"]
 # ---- こだわりチェック・効きぐあい・れいぶん・旧base_rules移行 ----
 _cfg_bak3 = dict(m.CFG)
 m.CFG["mode"] = "jp"
+m.CFG["advanced_rules_enabled"] = True
+m.CFG["persona_preferences_enabled"] = True
+m.CFG["persona_examples_enabled"] = True
+m.CFG["persona_free_text_enabled"] = True
 m.CFG["base_rules"] = ""
 m.CFG["examples"] = m.DEFAULTS["examples"]        # 実configの自作れいぶんに左右されない
 m.CFG["examples_en"] = m.DEFAULTS["examples_en"]
@@ -418,19 +425,61 @@ m.CFG.clear(); m.CFG.update(_cfg_bak3)
 
 # ---- 手動ことば: おしえる→ひとりごと候補に入る→チップ削除と同じ経路で消える ----
 _wc_bak2, _jw_bak2 = m._word_counts, m._judge_words
-m._word_counts = lambda: {}          # ログ由来の語を消して手動語だけで検証(ollama非依存)
-m._judge_words = lambda counts: {}
-_mw_bak = m._MANUAL_PATH.read_text(encoding="utf-8") if m._MANUAL_PATH.exists() else None
-m._save_manual_words(["てすとことば", "Testword"])
-assert "てすとことば" in m._interesting_words("jp") and "てすとことば" not in m._interesting_words("en")
-assert "Testword" in m._interesting_words("en")
-m.purge_word("てすとことば")
-assert "てすとことば" not in m._manual_words() and "Testword" in m._manual_words()
-if _mw_bak is None:
-    m._MANUAL_PATH.unlink(missing_ok=True)
-else:
-    m._MANUAL_PATH.write_text(_mw_bak, encoding="utf-8")
-m._word_counts, m._judge_words = _wc_bak2, _jw_bak2
+_mw_cfg_bak = dict(m.CFG)
+_mw_data_bak, _mw_manual_bak, _mw_videos_bak = m.DATA, m._MANUAL_PATH, m._VIDEOS_PATH
+_mw_td = Path(tempfile.mkdtemp())
+try:
+    m.DATA = _mw_td
+    m._MANUAL_PATH = _mw_td / "manual_words.json"
+    m._VIDEOS_PATH = _mw_td / "videos.json"
+    m.CFG["memory_words_enabled"] = True
+    m._word_counts = lambda: {}          # ログ由来の語を消して手動語だけで検証(ollama非依存)
+    m._judge_words = lambda counts: {}
+    m._save_manual_words(["てすとことば", "Testword"])
+    assert "てすとことば" in m._interesting_words("jp") and "てすとことば" not in m._interesting_words("en")
+    assert "Testword" in m._interesting_words("en")
+    m.purge_word("てすとことば")
+    assert "てすとことば" not in m._manual_words() and "Testword" in m._manual_words()
+finally:
+    m.DATA, m._MANUAL_PATH, m._VIDEOS_PATH = _mw_data_bak, _mw_manual_bak, _mw_videos_bak
+    m._word_counts, m._judge_words = _wc_bak2, _jw_bak2
+    m.CFG.clear(); m.CFG.update(_mw_cfg_bak)
+
+# ---- NGワードの検出と一括削除 ----
+_ng_td = Path(tempfile.mkdtemp())
+_ng_data, _ng_manual, _ng_videos = m.DATA, m._MANUAL_PATH, m._VIDEOS_PATH
+_ng_cfg, _ng_counts = dict(m.CFG), m._word_counts
+try:
+    m.DATA = _ng_td
+    m._MANUAL_PATH = _ng_td / "manual_words.json"
+    m._VIDEOS_PATH = _ng_td / "videos.json"
+    m.CFG["ng_words"] = "BadWord,危険,一,BADWORD"
+    (_ng_td / "conversation.jsonl").write_text(
+        '{"role":"user","text":"This contains badword"}\n'
+        '{"role":"user","text":"きけん"}\n', encoding="utf-8")
+    (_ng_td / "conversation_en.jsonl").write_text(
+        '{"role":"user","text":"safe conversation"}\n', encoding="utf-8")
+    (_ng_td / "diary.jsonl").write_text(
+        '{"role":"diary","text":"危険な日記"}\n', encoding="utf-8")
+    m._save_manual_words(["badword manual", "safe note"])
+    m._word_counts = lambda: {"BadWord": 4, "安全": 3}
+    assert m._ng_words() == ["BadWord", "危険"], m._ng_words()
+    _ng_hits = m._ng_hits()["words"]
+    _ng_by_word = {x["word"]: x for x in _ng_hits}
+    assert _ng_by_word["BadWord"]["conversation_count"] == 1, _ng_by_word
+    assert _ng_by_word["BadWord"]["learned_count"] == 2, _ng_by_word
+    assert _ng_by_word["危険"]["conversation_count"] == 1, _ng_by_word
+    _ng_deleted = m.purge_word("badword", kind="learned")
+    assert _ng_deleted == 2, _ng_deleted
+    assert "badword" not in (_ng_td / "conversation.jsonl").read_text(encoding="utf-8").lower()
+    assert "badword" not in m._MANUAL_PATH.read_text(encoding="utf-8").lower()
+    assert "危険" in (_ng_td / "diary.jsonl").read_text(encoding="utf-8"), "別のNG語まで消えた"
+    assert list(_ng_td.glob("*.purge.bak")), "NG削除のバックアップがない"
+finally:
+    m.DATA, m._MANUAL_PATH, m._VIDEOS_PATH = _ng_data, _ng_manual, _ng_videos
+    m.CFG.clear(); m.CFG.update(_ng_cfg)
+    m._word_counts = _ng_counts
+    m._WORDS_CACHE["key"] = None
 
 # ---- ものしりナレッジ: キーワード一致で注入・不一致で無音。空行は無視 ----
 _kn_bak = m.CFG.get("knowledge")
@@ -451,9 +500,12 @@ _tmp = _P(__file__).parent / "data" / "_test_words.jsonl"
 _tmp.write_text('{"ts":1,"role":"user","text":"チョコレートすき"}\n'
                 '{"ts":2,"role":"assistant","text":"カステラたべる"}\n', encoding="utf-8")
 _alldb, m.ALL_DB = m.ALL_DB, [_tmp]
+_wc_cfg_bak = dict(m.CFG)
+m.CFG["memory_words_enabled"] = True
 m._WORDS_CACHE["key"] = None
 _counts = m._word_counts()
 m.ALL_DB = _alldb
+m.CFG.clear(); m.CFG.update(_wc_cfg_bak)
 m._WORDS_CACHE["key"] = None
 _tmp.unlink()
 assert "チョコレート" in _counts, _counts
@@ -468,11 +520,19 @@ assert parsed == {"Cloma": True, "フィザカル": True, "プランス": True,
 assert m._parse_judge("cloma", ["Cloma"]) == {"Cloma": True}   # 大文字小文字ゆれ
 
 _wc, _jw = m._word_counts, m._judge_words
-m._word_counts = lambda: {"Cloma": 5, "What": 14, "おなか": 11, "フィザカル": 3, "ひとこと": 1}
-m._judge_words = lambda counts: {"What": False, "おなか": False, "Cloma": True}
-assert m._interesting_words("en") == ["Cloma"], "判定Falseの語が混ざった"
-assert m._interesting_words("jp") == ["フィザカル"], "未判定はTrue扱い(フェイルオープン)のはず"
-m._word_counts, m._judge_words = _wc, _jw
+_iw_cfg_bak = dict(m.CFG)
+_iw_manual_bak = m._MANUAL_PATH
+try:
+    m._MANUAL_PATH = Path(tempfile.mkdtemp()) / "manual_words.json"
+    m.CFG["memory_words_enabled"] = True
+    m._word_counts = lambda: {"Cloma": 5, "What": 14, "おなか": 11, "フィザカル": 3, "ひとこと": 1}
+    m._judge_words = lambda counts: {"What": False, "おなか": False, "Cloma": True}
+    assert m._interesting_words("en") == ["Cloma"], "判定Falseの語が混ざった"
+    assert m._interesting_words("jp") == ["フィザカル"], "未判定はTrue扱い(フェイルオープン)のはず"
+finally:
+    m._word_counts, m._judge_words = _wc, _jw
+    m._MANUAL_PATH = _iw_manual_bak
+    m.CFG.clear(); m.CFG.update(_iw_cfg_bak)
 
 # ---- 漢字モード(セルペア16bit) ----
 assert m.KCHARSET, "kanji_charset.jsonが無い(先にgen_kanji_atlas.pyを実行)"

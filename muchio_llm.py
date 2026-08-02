@@ -877,12 +877,27 @@ def normalize_text(s):
     s = _kata_to_hira(s)
     return s.replace("ー", "-").replace("〜", "~").replace("・", ".")
 
+def _ng_words():
+    """Return configured NG words with the same separators and minimum length as censoring."""
+    seen, words = set(), []
+    for raw in re.split(r"[、,\s]+", str(CFG.get("ng_words") or "")):
+        word = unicodedata.normalize("NFKC", raw).strip()
+        key = word.lower()
+        if len(word) < 2 or not word or key in seen:
+            continue
+        seen.add(key)
+        words.append(word)
+    return words
+
+def _ng_word_matches(text, word):
+    return len(str(word).strip()) >= 2 and _has_word(str(text), str(word).strip())
+
 def _ng_censor(s):
     """NGワード(本名・住所など)を「ぴ-」に潰す。表示も保存(assistant側)もto_board_text経由なのでここが関門。
     漢字で登録してもひらがな化された盤面文に当たるよう、登録語も同じ変換をかけて照合する"""
     if not CFG.get("advanced_safety_enabled", True):
         return s
-    for w in re.split(r"[、,\s]+", str(CFG.get("ng_words", ""))):
+    for w in _ng_words():
         if len(w) < 2:   # 1文字語は誤爆がひどいので無視
             continue
         for form in {w.lower(), normalize_text(_kata_to_hira(_kanji_to_hira(w.lower())))}:
@@ -1326,6 +1341,8 @@ def _memory_kind_sources(kind):
         return ("conversation", "conversation_en") if CFG.get("memory_conversation_enabled", True) else ()
     if kind == "diary":
         return ("diary", "diary_en") if CFG.get("memory_diary_enabled", True) else ()
+    if kind == "learned":
+        return ("conversation", "conversation_en", "diary", "diary_en")
     if kind == "notes":
         return ("manual", "knowledge")
     if kind == "video":
@@ -1628,6 +1645,57 @@ def _interesting_words(lang):
             out.append(w)
     return out
 
+def _learned_word_entries():
+    """Return all persisted/displayable learned-word entries without asking the LLM to judge them."""
+    entries, seen = [], set()
+    for word, count in _word_counts().items():
+        if count < 2:
+            continue
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append((word, count))
+    for word in _manual_words():
+        key = word.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append((word, None))
+    return entries
+
+def _ng_hits():
+    """Find configured NG words in conversation records and learned-word data."""
+    hits = {word: {"word": word, "conversation_count": 0, "learned_count": 0}
+            for word in _ng_words()}
+    if not hits:
+        return {"words": []}
+
+    for src in ("conversation", "conversation_en"):
+        path = _memory_sources()[src][0]
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                text = json.loads(line).get("text", "")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            for word, item in hits.items():
+                if _ng_word_matches(text, word):
+                    item["conversation_count"] += 1
+
+    for learned_word, _count in _learned_word_entries():
+        for word, item in hits.items():
+            if _ng_word_matches(learned_word, word):
+                item["learned_count"] += 1
+
+    return {"words": [item for item in hits.values()
+                      if item["conversation_count"] or item["learned_count"]]}
+
 def _words_html():
     """会話+日記の頻出名詞を界隈別のチップ一覧に。ありふれた語は折り畳む"""
     if not CFG.get("memory_words_enabled", True):
@@ -1731,6 +1799,8 @@ def _memory_kind_sources(kind):
         return ("conversation", "conversation_en") if CFG.get("memory_conversation_enabled", True) else ()
     if kind == "diary":
         return ("diary", "diary_en") if CFG.get("memory_diary_enabled", True) else ()
+    if kind == "learned":
+        return ("conversation", "conversation_en", "diary", "diary_en")
     if kind == "notes":
         return ("manual", "knowledge")
     if kind == "video":
@@ -1890,7 +1960,7 @@ def _memory_records(q="", limit=600, kind="all"):
 def purge_word(word, kind="all"):
     """会話と日記から、その単語を含む行を消す(元ファイルはバックアップ)。消した行数を返す"""
     kind = (kind or "all").strip().lower()
-    if kind not in ("all", "conversation", "diary", "notes", "video"):
+    if kind not in ("all", "conversation", "diary", "learned", "notes", "video"):
         kind = "all"
     sources = set(_memory_kind_sources(kind))
     n = 0
@@ -1911,12 +1981,13 @@ def purge_word(word, kind="all"):
                 shutil.copy2(path, _backup_path(path, "purge"))
                 path.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
                 n += len(lines) - len(keep)
-        if kind in ("all", "notes"):
+        if kind in ("all", "notes", "learned"):
             manual = _manual_words()
             kept_manual = [w for w in manual if not _has_word(w, word)]
             if len(kept_manual) != len(manual):
                 _write_json_backup(_MANUAL_PATH, kept_manual)
                 n += len(manual) - len(kept_manual)
+        if kind in ("all", "notes"):
             lines = _knowledge_lines()
             kept_lines = [line for line in lines if not _has_word(line, word)]
             if len(kept_lines) != len(lines):
@@ -2345,6 +2416,8 @@ def _bootstrap_data():
 _RESET = threading.Event()   # リセット要求。mainループが安全なタイミングで処理する
 _PURGE = []                  # わすれたい単語のキュー。mainループが安全なタイミングで処理する
 
+_MEMORY_REFRESH = threading.Event()
+
 class _UIHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2412,6 +2485,10 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if path == "/words":
             self._send_html(_words_html())
+            return
+        if path == "/ng_hits":
+            load_cfg()
+            self._send_json(_ng_hits())
             return
         if path == "/memory":
             q = parse_qs(query).get("q", [""])[0]
@@ -2488,6 +2565,19 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         n = int(self.headers.get("Content-Length") or 0)
         q = parse_qs(self.rfile.read(n).decode("utf-8"))
+        if self.path == "/ng_word_delete":
+            word = q.get("word", [""])[0].strip()
+            if not word:
+                self._send_json({"ok": False, "error": "word is required"}, 400)
+                return
+            try:
+                deleted = purge_word(word, kind="learned")
+            except OSError as e:
+                self._send_json({"ok": False, "error": str(e)}, 500)
+                return
+            _MEMORY_REFRESH.set()
+            self._send_json({"ok": True, "word": word, "deleted": deleted})
+            return
         if self.path == "/purge":    # 単語けし: mainループが安全なタイミングでファイルを書き換える
             w = q.get("word", [""])[0].strip()
             kind = q.get("kind", ["all"])[0]
@@ -2816,6 +2906,12 @@ def main():
                 recent.clear()
                 vrcx_sense.reload_memory()
                 log(f"界隈切替: {'en' if current_suffix else 'jp'}側の記憶に切替")
+            if _MEMORY_REFRESH.is_set():
+                _MEMORY_REFRESH.clear()
+                history[:] = load_history()
+                vrcx_sense.reload_diary()
+                vrcx_sense.reload_memory()
+                vrcx_sense.reload_titles()
             if _RESET.is_set():
                 _RESET.clear()
                 p = conv_path()   # リセット=いまの文脈のやり直しなので現在の界隈側だけ

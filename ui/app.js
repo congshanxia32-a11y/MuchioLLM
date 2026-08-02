@@ -235,6 +235,7 @@ cfg.addEventListener('submit', async e=>{
     $('savebar').classList.remove('on');
     toast('ほぞんしました（数秒で反映されます）');
     loadM();
+    loadNgHits();
   }else if(r.status === 409){
     toast('べつの画面で設定が変わっています。ページを読み込み直してください', true);
   }else{
@@ -450,3 +451,52 @@ async function delW(el){
   toast('「'+w+'」をわすれます');
 }
 loadW();
+
+async function loadNgHits(){
+  const box = $('ng-hits');
+  if(!box) return;
+  try{
+    const d = await (await fetch('/ng_hits')).json();
+    const words = Array.isArray(d.words) ? d.words : [];
+    if(!words.length){
+      box.hidden = true;
+      box.innerHTML = '';
+      return;
+    }
+    box.hidden = false;
+    box.innerHTML = '<div class="ng-hit-title">禁止ワードを含む保存データがあります</div>' +
+      words.map(item=>`<div class="ng-hit-row">
+        <div><b>${esc(item.word)}</b><small>会話 ${Number(item.conversation_count)||0}件 / 覚えた単語 ${Number(item.learned_count)||0}件</small></div>
+        <button type="button" class="ghost danger" data-ng-delete="${esc(item.word)}">該当データを削除</button>
+      </div>`).join('');
+    box.querySelectorAll('[data-ng-delete]').forEach(btn=>{
+      btn.addEventListener('click', ()=>deleteNgWord(btn));
+    });
+  }catch(e){
+    box.hidden = true;
+    box.innerHTML = '';
+  }
+}
+
+async function deleteNgWord(btn){
+  const word = btn.dataset.ngDelete || '';
+  if(!word || !confirm(`「${word}」を含む会話・学習データを削除しますか？\\nバックアップは保存されます。`)) return;
+  btn.disabled = true;
+  try{
+    const r = await fetch('/ng_word_delete', {
+      method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'},
+      body:'word='+encodeURIComponent(word),
+    });
+    const d = await r.json().catch(()=>({}));
+    if(!r.ok || !d.ok) throw new Error(d.error || 'delete failed');
+    toast(`「${word}」を含む${d.deleted || 0}件を削除しました`);
+    await Promise.all([loadNgHits(), loadM(), loadW()]);
+  }catch(e){
+    btn.disabled = false;
+    toast('禁止ワードの削除に失敗しました', true);
+  }
+}
+
+loadNgHits();
+setInterval(loadNgHits, 5000);

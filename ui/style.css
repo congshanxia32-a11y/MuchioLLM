@@ -91,6 +91,13 @@ button:hover{filter:brightness(1.12)}
  padding:3px 12px;margin:3px;cursor:pointer;font-size:.88em}
 .chip:hover{background:#3a3a58;border-color:var(--accent)}
 .chip small{color:var(--faint);margin-left:4px}
+.ng-hits{margin-top:8px;padding:8px;background:#2a2022;border:1px solid #70404a;border-radius:var(--rs)}
+.ng-hits[hidden]{display:none}
+.ng-hit-title{color:#ffd38a;font-size:.86em;margin-bottom:5px}
+.ng-hit-row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0}
+.ng-hit-row + .ng-hit-row{border-top:1px solid #49323a}
+.ng-hit-row small{display:block;color:var(--faint);font-size:.78em;margin-top:2px}
+.ng-hit-row button{white-space:nowrap}
 #words{background:var(--panel);border:1px solid var(--line);border-radius:var(--rs);
  padding:8px;max-height:220px;overflow-y:auto}
 .wgroup{margin:6px 0 2px;color:var(--dim)}
