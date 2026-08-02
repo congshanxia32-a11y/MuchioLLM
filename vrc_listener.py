@@ -148,6 +148,7 @@ def main():
     gate, sil_end = float(RMS_GATE), float(SILENCE_END)   # config.jsonから15秒毎に更新
     hint = "VRChatで、ペットと話している。"               # 認識ヒント(同上。config読込までの仮値)
     v_thresh = 0.55     # 声紋一致のcosine閾値(config voice_thresholdで調整)
+    enabled = True      # 設定UIの「耳」カテゴリ。OFF中は音声を認識・保存しない
     lang_lock = None    # 日本語/英語モードでは言語を固定する(誤判定が消えて精度が上がる)
     while True:
         if mic_mode and time.time() - pet_check > 10:   # VRCPetと二重認識しない
@@ -170,6 +171,7 @@ def main():
                 gate = float(c.get("rms_gate", RMS_GATE))
                 sil_end = float(c.get("silence_end", SILENCE_END))
                 v_thresh = float(c.get("voice_threshold", 0.55))
+                enabled = bool(c.get("advanced_listener_enabled", True))
                 mode = c.get("mode", "auto")
                 lang_lock = {"jp": "ja", "en": "en"}.get(mode)
                 key = "stt_hint_en" if mode == "en" else "stt_hint"
@@ -180,6 +182,10 @@ def main():
             except Exception:
                 pass
             log(f"音量RMS={rms:.0f} / ゲート{gate:.0f}  ※話してもRMSが上がらないなら別のデバイスを指定")
+
+        if not enabled:
+            buf, silence = [], 0.0
+            continue
 
         if speaking:
             buf.append(raw)

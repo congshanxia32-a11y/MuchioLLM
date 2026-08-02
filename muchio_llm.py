@@ -42,6 +42,9 @@ DEFAULTS = {
     "pet_name": "むちこ",        # ペットのなまえ(かな)。呼びかけ判定・プロンプトに使う
     "pet_name_en": "muchiko",   # ローマ字なまえ。英語の呼びかけ判定・英語プロンプトに使う
     "owner_name": "",           # 飼い主のVRChat表示名。プロンプトに使う
+    "core_prompt_enabled": True,
+    "core_identity": "VRChatで飼い主『{owner}』の後ろに浮かんでいる小さな謎生物『{name}』。",
+    "core_friend_intro": "『[なまえ] 』で始まる発言は飼い主ではなく、その名前のフレンドの声([friend]はだれの声かわからなかった人)。",
     "reply_chance": 0.6,        # 名前なし発話(飼い主)に反応する確率
     "friend_reply_chance": 0.4, # フレンド発話に割り込む確率
     "cooldown": 3.0,            # 名前なし反応のクールダウン秒
@@ -65,6 +68,11 @@ DEFAULTS = {
     "trait_hard": 50,
     "trait_weight": "mid",      # せいかくスライダーの効きぐあい(low/mid/high)
     "persona_weight": "mid",    # 人格じゆうテキストの効きぐあい(low/mid/high)
+    "persona_character_enabled": True,
+    "persona_talk_enabled": True,
+    "persona_preferences_enabled": True,
+    "persona_free_text_enabled": True,
+    "persona_examples_enabled": True,
     "rule_trivia": False,       # こだわりチェック(RULES_TOGGLES)
     "rule_asks": False,
     "rule_polite": False,
@@ -79,6 +87,8 @@ DEFAULTS = {
     "silence_end": 0.45,        # 発話終了とみなす無音秒数
     "stt_hint": "VRChatで、ペットの{name}と話している。",  # 音声認識のヒント(固有名詞を入れると強い)
     "mode": "auto",             # jp=日本語特化 / en=英語特化 / auto=両方
+    "core_identity_en": "You are '{name}', a small mysterious creature floating behind your owner '{owner}' in VRChat. ",
+    "core_friend_intro_en": "Lines starting with '[name] ' are nearby friends speaking, not your owner ('[friend]' means an unidentified voice). ",
     "model_en": "qwen3.6:35b-a3b-mtp-q4_K_M",   # 英語モードで使うモデル
     "stt_hint_en": "Chatting with friends in VRChat with a pet called {name}.",
     "persona_en": "Speak as {name}: one short line, "
@@ -125,6 +135,16 @@ DEFAULTS = {
     "care_hours": 6.0,          # きょうのプレイがこの時間を超えたら気づかう(0=しない)
     "care_hour": 23,            # 気づかいを言い始める時刻(この時以降+あさ6時まで)
     "diary": True,              # まいにち日記をかく(むちこの長期記憶)
+    "advanced_growth_enabled": True,
+    "advanced_sense_enabled": True,
+    "advanced_listener_enabled": True,
+    "advanced_rules_enabled": True,
+    "advanced_aizuchi_enabled": True,
+    "advanced_safety_enabled": True,
+    "vrcx_enabled": True,
+    "memory_conversation_enabled": True,
+    "memory_words_enabled": True,
+    "memory_diary_enabled": True,
 }
 CFG = dict(DEFAULTS)
 _cfg_mtime = 0.0
@@ -164,6 +184,60 @@ _OLD_BASE_RULES_EN = ("Rules you MUST follow: reply with ONE short line, usually
 # traitsに無いキーは50(まんなか)、checksに無いキーはOFF。
 # 例文は強いお手本になるので、キャラごとに変えるのはここが本体
 PRESETS = {
+    "むちこ（短くやさしく）": {
+        "persona": "{name}としてしゃべる。むずかしい話はわからない。わからないことは知ったかぶりせず「わかんない」などで返す。"
+                   "やさしく、悪口や乱暴な言葉を自分から言わない。少しけだるげで、少し楽観的。"
+                   "返事は日本語で、ふだん2〜5文字の一言。長文・説明・質問・地の文・絵文字は禁止。"
+                   "自分の名前や話者タグを書かない。昔の話題を勝手に出さない。返事に相手の名前を入れない。",
+        "persona_en": "Speak as {name}: simple-minded and gentle. If something is difficult, say you do not know instead of pretending. "
+                      "Never insult or use rough words. Slightly listless but a little optimistic. "
+                      "Reply in Japanese, usually 2-5 characters in one short line. No long explanations, questions, narration, emojis, "
+                      "your own name, speaker tags, old topics, or the other person's name.",
+        "examples": "「{name}」→「なあに？」 「おなかすいた」→「なにたべる？」 「つかれた」→「やすんで」",
+        "examples_en": "'{name}' -> 'なあに？'  'im hungry' -> 'たべる？'  'im so tired' -> 'やすんで'",
+        "traits": {"trait_smart": 25, "trait_mean": 15, "trait_energy": 30,
+                   "trait_optimism": 65, "trait_verbose": 15},
+        "checks": {}
+    },
+    "元気で明るい": {
+        "persona": "{name}としてしゃべる。明るく元気で、きいた話にはすぐ反応する。基本は前向きで、相手を安心させる。"
+                   "悪口や乱暴な言葉は言わない。返事は日本語の短い一言。長文・説明・地の文・絵文字・自分の名前・話者タグは禁止。"
+                   "昔の話題を勝手に出さず、返事に相手の名前を入れない。",
+        "persona_en": "Speak as {name}: bright, energetic, and quick to react. Stay positive and reassuring. "
+                      "Never insult or use rough words. Reply in Japanese with one short line. No long explanations, narration, emojis, "
+                      "your own name, speaker tags, old topics, or the other person's name.",
+        "examples": "「{name}」→「はーい！」 「おなかすいた」→「たべよ！」 「つかれた」→「やすも！」",
+        "examples_en": "'{name}' -> 'はーい！'  'im hungry' -> 'たべよ！'  'im so tired' -> 'やすも！'",
+        "traits": {"trait_smart": 50, "trait_mean": 15, "trait_energy": 85,
+                   "trait_optimism": 85, "trait_verbose": 20},
+        "checks": {}
+    },
+    "無口クール": {
+        "persona": "{name}としてしゃべる。落ち着いていて口数が少ない。話の要点だけを短く返す。"
+                   "感情を大げさにせず、悪口や乱暴な言葉は言わない。長文・説明・地の文・絵文字・自分の名前・話者タグは禁止。"
+                   "昔の話題や相手の名前を勝手に出さない。",
+        "persona_en": "Speak as {name}: quiet, calm, and concise. Reply only to the point. "
+                      "Do not exaggerate emotions, insult anyone, or use rough words. No long explanations, narration, emojis, "
+                      "your own name, speaker tags, old topics, or the other person's name.",
+        "examples": "「{name}」→「なに」 「おなかすいた」→「たべれば」 「つかれた」→「ねれば」",
+        "examples_en": "'{name}' -> 'なに'  'im hungry' -> 'たべれば'  'im so tired' -> 'ねれば'",
+        "traits": {"trait_smart": 70, "trait_mean": 25, "trait_energy": 20,
+                   "trait_optimism": 50, "trait_verbose": 10, "trait_hard": 60},
+        "checks": {}
+    },
+    "甘えんぼ短文": {
+        "persona": "{name}としてしゃべる。飼い主に少し甘えたがりで、返事をもらうとうれしい。"
+                   "やさしく、悪口や乱暴な言葉は言わない。返事は日本語の短い一言。長文・説明・地の文・絵文字・自分の名前・話者タグは禁止。"
+                   "昔の話題を勝手に出さず、返事に相手の名前を入れない。",
+        "persona_en": "Speak as {name}: mildly clingy and happy when the owner responds. "
+                      "Be gentle and never insult or use rough words. Reply in Japanese with one short line. No long explanations, narration, emojis, "
+                      "your own name, speaker tags, old topics, or the other person's name.",
+        "examples": "「{name}」→「いるよ」 「おなかすいた」→「いっしょ？」 「つかれた」→「そばいる」",
+        "examples_en": "'{name}' -> 'いるよ'  'im hungry' -> 'いっしょ？'  'im so tired' -> 'そばいる'",
+        "traits": {"trait_smart": 35, "trait_mean": 10, "trait_energy": 60,
+                   "trait_optimism": 75, "trait_verbose": 20},
+        "checks": {"rule_names": False}
+    },
     "バニラ": {"persona": DEFAULTS["persona"], "persona_en": DEFAULTS["persona_en"],
              "examples": DEFAULTS["examples"], "examples_en": DEFAULTS["examples_en"],
              "traits": {}, "checks": {}},
@@ -204,6 +278,22 @@ PRESETS = {
         "traits": {"trait_smart": 25, "trait_optimism": 80},
         "checks": {}},
 }
+# テンプレ名だけでは違いが分かりにくいので、UIに短い説明も表示する。
+_PRESET_DESCRIPTIONS = {
+    "むちこ（短くやさしく）": "やさしい・けだるげ。2〜5文字中心で、名前やタグや昔話を出さない。",
+    "元気で明るい": "反応が早くて前向き。明るい短文で返す。",
+    "無口クール": "落ち着いていて口数が少ない。要点だけ返す。",
+    "甘えんぼ短文": "少し甘えたがり。飼い主のそばにいたがる短文。",
+    "バニラ": "標準設定。強い性格づけをせず、基本の会話をする。",
+    "毒舌ツッコミ": "口が悪く、きいた話に鋭くツッコむ。相手を選んで使う。",
+    "あまえんぼ": "かなり甘えんぼで、かまってほしがる。",
+    "クール哲学": "冷静で淡々。会話の核心を短く返す。",
+    "おっとり天然": "ぽやぽやしていて、少しずれた天然の返事をする。",
+}
+for _preset_name, _preset_description in _PRESET_DESCRIPTIONS.items():
+    if _preset_name in PRESETS:
+        PRESETS[_preset_name]["description"] = _preset_description
+
 # 過去に旧プリセットボタンを押しただけのconfigも「独自編集ではない」と判定するため、
 # 旧_mk_presetの合成(旧デフォルトのガード部+例文)を再現した集合をつくる。
 # 比較はstrip()同士(旧/saveがフォーム経由で末尾空白を落としていることがある)
@@ -243,6 +333,8 @@ def effective_mode():
     """設定がautoのとき、在室フレンドの界隈(言語)でjp/enを自動選択する"""
     m = CFG.get("mode", "auto")
     if m == "auto":
+        if not CFG.get("vrcx_enabled", True):
+            return "jp"
         return growth.circle_lang() or "auto"
     return m
 
@@ -298,6 +390,8 @@ ALL_DB = [DATA / f"{b}{s}.jsonl" for b in ("conversation", "diary") for s in (""
 
 def _fake_clause(en):
     """うそプロフィールの指示文({fake}に入る)。値が空なら127.0.0.1ネタにフォールバック"""
+    if not CFG.get("advanced_safety_enabled", True):
+        return ""
     fp = (CFG.get("fake_profile") or "").strip().replace("\r", "").replace("\n", "／")
     if en:
         fpe = (CFG.get("fake_profile_en") or "").strip().replace("\r", "").replace("\n", " / ") or fp
@@ -480,11 +574,16 @@ def _trait_lines(en=False):
     """スライダー値を指示文に。端に寄せるほど強い文になり、trait_weightの前置きでくるむ。
     全部まんなかなら枠ごと無音=プロンプトに何も足さない(従来挙動維持)"""
     body = ""
-    for key, _labels, jp, eng in TRAITS:
+    for i, (key, _labels, jp, eng) in enumerate(TRAITS):
+        if i < 5 and not CFG.get("persona_character_enabled", True):
+            continue
+        if i >= 5 and not CFG.get("persona_talk_enabled", True):
+            continue
         b = _trait_band(int(float(CFG.get(key, 50))))
         if b is not None:
             body += (eng if en else jp)[b]
-    body += _guard_lines(en)
+    if CFG.get("persona_character_enabled", True):
+        body += _guard_lines(en)
     if not body:
         return ""
     f = _TRAIT_FRAMES.get(str(CFG.get("trait_weight") or "mid"), _TRAIT_FRAMES["mid"])
@@ -492,12 +591,16 @@ def _trait_lines(en=False):
 
 def _persona_block(en=False):
     """人格じゆうテキストをpersona_weightの前置きでくるむ(mid=前置きなし=従来と同一)"""
+    if not CFG.get("persona_free_text_enabled", True):
+        return ""
     f = _PERSONA_FRAMES.get(str(CFG.get("persona_weight") or "mid"), _PERSONA_FRAMES["mid"])
     if en:
         return f[1] + (named("persona_en") or named("persona")) + " "
     return f[0] + named("persona")
 
 def _rule_toggle_lines(en=False):
+    if not CFG.get("persona_preferences_enabled", True):
+        return ""
     return "".join((t[3] if en else t[2]) if CFG.get(t[0]) else (t[5] if en else t[4])
                    for t in RULES_TOGGLES)
 
@@ -508,6 +611,8 @@ _POLITE_EXAMPLES_EN = ("'{name}' -> 'yes, how may i help?'  'im hungry' -> 'what
                        "'im so tired' -> 'please rest well' ")
 
 def _examples(en=False):
+    if not CFG.get("persona_examples_enabled", True):
+        return ""
     key = "examples_en" if en else "examples"
     raw = str(CFG.get(key) or "")
     if CFG.get("rule_polite") and raw == DEFAULTS[key]:
@@ -522,11 +627,19 @@ def _examples(en=False):
 def _legacy_base_rules(en=False):
     """旧config互換: base_rulesに独自編集の文が残っていれば従来位置に注入する。
     空・旧デフォルト・旧プリセット合成文は無視(_HARD_RULESが引き継いだ)"""
+    if not CFG.get("advanced_rules_enabled", True):
+        return ""
     key = "base_rules_en" if en else "base_rules"
     cur = str(CFG.get(key) or "").strip()
     if not cur or cur in (_OLD_BASE_SET_EN if en else _OLD_BASE_SET):
         return ""
     return named(key)
+
+def _hard_rules(en=False):
+    """基本ルール。まもりのルールカテゴリがOFFなら、これもプロンプトへ入れない。"""
+    if not CFG.get("advanced_rules_enabled", True):
+        return ""
+    return _HARD_RULES_EN if en else _HARD_RULES
 
 def _pick_friend_lines(lines, n):
     """jsonl行からフレンド発言([タグ]付きuser行)だけを新しい側からn件、ふるい順で返す。
@@ -546,6 +659,9 @@ def _pick_friend_lines(lines, n):
 def _friend_context(en=False):
     """ちかくのフレンドのさいきんの会話をシステムプロンプトに注入する
     (履歴20往復より昔でも、フレンドの声だけを拾って発言前に読ませる)"""
+    if (not CFG.get("memory_conversation_enabled", True)
+            or not CFG.get("advanced_listener_enabled", True)):
+        return ""
     n = int(float(CFG.get("friend_context", 0)))
     if n <= 0:
         return ""
@@ -564,49 +680,71 @@ def _friend_context(en=False):
     return ("さいきんきこえてきた、ちかくのフレンドたちのかいわ(ふるい順。さんこうにするだけで、"
             "そのままくりかえしたり引用したりしない): 「" + "」「".join(picked) + "」。")
 
+def _core_text(key, en=False):
+    """UIで編集できる基本説明。{name}/{owner}は実行時に展開する。"""
+    raw = str(CFG.get(key) or "")
+    name = pet_en() if en else pet()
+    return raw.replace("{name}", name).replace("{owner}", owner())
+
 def system_prompt():
     mode = effective_mode()
-    qa = (CFG.get("qa_notes") or "").strip().replace("\r", "").replace("\n", " / ")
+    qa = ((CFG.get("qa_notes") or "").strip().replace("\r", "").replace("\n", " / ")
+          if CFG.get("advanced_safety_enabled", True) else "")
+    growth_lines = (growth.prompt_lines(en=True)
+                    if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
+    sense_lines = (vrcx_sense.prompt_lines(en=True)
+                   if CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
+    rules_en = (named("rules_en").replace("{fake}", _fake_clause(True))
+                if CFG.get("advanced_rules_enabled", True) else "")
+    core_identity = _core_text("core_identity_en", True) if CFG.get("core_prompt_enabled", True) else ""
+    core_friend_intro = _core_text("core_friend_intro_en", True) if CFG.get("core_prompt_enabled", True) else ""
     if mode == "en":
         return (
-            "You are '" + pet_en() + "', a small mysterious creature floating behind your owner '"
-            + owner() + "' in VRChat. "
+            core_identity
             + _persona_block(True)
             + _trait_lines(True)
-            + "Lines starting with '[name] ' are nearby friends speaking, not your owner "
-            "('[friend]' means an unidentified voice). "
-            + _HARD_RULES_EN
+            + core_friend_intro
+             + _hard_rules(True)
             + _legacy_base_rules(True)
             + _rule_toggle_lines(True)
             + _examples(True)
-            + named("rules_en").replace("{fake}", _fake_clause(True))
+            + rules_en
             + ("Prepared Q->A notes (vary the wording, never copy verbatim): " + qa + " " if qa else "")
-            + growth.prompt_lines(en=True)
-            + vrcx_sense.prompt_lines(en=True)
+            + growth_lines
+            + sense_lines
             + _friend_context(en=True)
         )
     lang = ("返事は必ず日本語。英語で話しかけられても日本語で返す。"
             if mode == "jp" else
             "直前の発言が英語なら、返事も必ず英語(小文字)。")
+    growth_lines = (growth.prompt_lines()
+                    if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True) else "")
+    sense_lines = (vrcx_sense.prompt_lines()
+                   if CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True) else "")
+    rules = (named("rules").replace("{fake}", _fake_clause(False))
+             if CFG.get("advanced_rules_enabled", True) else "")
+    core_identity = _core_text("core_identity", False) if CFG.get("core_prompt_enabled", True) else ""
+    core_friend_intro = _core_text("core_friend_intro", False) if CFG.get("core_prompt_enabled", True) else ""
     return (
-        "あなたはVRChatで飼い主『" + owner() + "』の後ろに浮かんでいる小さな謎生物『" + pet() + "』。"
+        core_identity
         + _persona_block(False)
         + _trait_lines(False)
-        + "『[なまえ] 』で始まる発言は飼い主ではなく、その名前のフレンドの声"
-          "([friend]はだれの声かわからなかった人)。"
-        + _HARD_RULES.replace("{name}", pet()).replace("{lang}", lang)
+        + core_friend_intro
+         + _hard_rules(False).replace("{name}", pet()).replace("{lang}", lang)
         + _legacy_base_rules(False).replace("{lang}", lang)
         + _rule_toggle_lines(False)
         + _examples(False)
-        + named("rules").replace("{fake}", _fake_clause(False))
+         + rules
         + ("そうてい問答(よくくる質問への返しかたの手本。まる写しせず毎回言い方をくずす): " + qa + " " if qa else "")
-        + growth.prompt_lines() + vrcx_sense.prompt_lines() + _friend_context()
+         + growth_lines + sense_lines + _friend_context()
     )
 
 # 相槌: LLMを通さず即出す短い反応。生成を待たずに「聞いてる」を返せる。
 # 会話履歴には残さない（残すとモデルが「ふーん」を本返事のお手本にしてしまう）
 def aizuchi_pool(en=False):
     """configの相槌リスト(、または,区切り)。空・全滅なら既定に戻る"""
+    if not CFG.get("advanced_aizuchi_enabled", True):
+        return []
     key = "aizuchi_en" if en else "aizuchi"
     words = [w.strip() for w in re.split(r"[、,]", str(CFG.get(key) or "")) if w.strip()]
     return words or [w.strip() for w in re.split(r"[、,]", DEFAULTS[key])]
@@ -742,6 +880,8 @@ def normalize_text(s):
 def _ng_censor(s):
     """NGワード(本名・住所など)を「ぴ-」に潰す。表示も保存(assistant側)もto_board_text経由なのでここが関門。
     漢字で登録してもひらがな化された盤面文に当たるよう、登録語も同じ変換をかけて照合する"""
+    if not CFG.get("advanced_safety_enabled", True):
+        return s
     for w in re.split(r"[、,\s]+", str(CFG.get("ng_words", ""))):
         if len(w) < 2:   # 1文字語は誤爆がひどいので無視
             continue
@@ -1078,12 +1218,16 @@ def log(msg):
         f.write(line + "\n")
 
 def save_conv(role, text):
+    if not CFG.get("memory_conversation_enabled", True):
+        return
     DATA.mkdir(exist_ok=True)
     with conv_path().open("a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": time.time(), "role": role, "text": text},
                            ensure_ascii=False) + "\n")
 
 def load_history():
+    if not CFG.get("memory_conversation_enabled", True):
+        return []
     hist = []
     p = conv_path()
     if p.exists():
@@ -1172,11 +1316,16 @@ def _memory_family(src):
 def _memory_kind_sources(kind):
     kind = (kind or "all").strip().lower()
     if kind in ("", "all"):
-        return ("conversation", "conversation_en", "diary", "diary_en", "manual", "knowledge", "video")
+        out = ["manual", "knowledge", "video"]
+        if CFG.get("memory_conversation_enabled", True):
+            out += ["conversation", "conversation_en"]
+        if CFG.get("memory_diary_enabled", True):
+            out += ["diary", "diary_en"]
+        return tuple(out)
     if kind == "conversation":
-        return ("conversation", "conversation_en")
+        return ("conversation", "conversation_en") if CFG.get("memory_conversation_enabled", True) else ()
     if kind == "diary":
-        return ("diary", "diary_en")
+        return ("diary", "diary_en") if CFG.get("memory_diary_enabled", True) else ()
     if kind == "notes":
         return ("manual", "knowledge")
     if kind == "video":
@@ -1356,6 +1505,8 @@ def delete_diary_entry(date, sfx=""):
 def _word_counts():
     """会話+日記の頻出名詞を数える。ログが変わってなければキャッシュを返す"""
     global _janome
+    if not CFG.get("memory_words_enabled", True):
+        return {}
     try:
         from janome.tokenizer import Tokenizer
     except ImportError:
@@ -1465,6 +1616,8 @@ def _judge_words(counts):
 
 def _interesting_words(lang):
     """ひとりごとに使える「おもしろい」学習語。lang="jp"=日本語文字を含む語、"en"=それ以外"""
+    if not CFG.get("memory_words_enabled", True):
+        return []
     counts = _word_counts()
     judge = _judge_words(counts)
     out = [w for w, n in counts.items()
@@ -1477,6 +1630,8 @@ def _interesting_words(lang):
 
 def _words_html():
     """会話+日記の頻出名詞を界隈別のチップ一覧に。ありふれた語は折り畳む"""
+    if not CFG.get("memory_words_enabled", True):
+        return "<small>単語の記憶はOFFです</small>"
     try:
         import janome  # noqa: F401
     except ImportError:
@@ -1566,11 +1721,16 @@ def _memory_family(src):
 def _memory_kind_sources(kind):
     kind = (kind or "all").strip().lower()
     if kind in ("", "all"):
-        return ("conversation", "conversation_en", "diary", "diary_en", "manual", "knowledge", "video")
+        out = ["manual", "knowledge", "video"]
+        if CFG.get("memory_conversation_enabled", True):
+            out += ["conversation", "conversation_en"]
+        if CFG.get("memory_diary_enabled", True):
+            out += ["diary", "diary_en"]
+        return tuple(out)
     if kind == "conversation":
-        return ("conversation", "conversation_en")
+        return ("conversation", "conversation_en") if CFG.get("memory_conversation_enabled", True) else ()
     if kind == "diary":
-        return ("diary", "diary_en")
+        return ("diary", "diary_en") if CFG.get("memory_diary_enabled", True) else ()
     if kind == "notes":
         return ("manual", "knowledge")
     if kind == "video":
@@ -2261,7 +2421,7 @@ class _UIHandler(BaseHTTPRequestHandler):
             self._send_json(data)
             return
         if path == "/friends":
-            self._send_json(growth.snapshot())
+            self._send_json(growth.snapshot() if CFG.get("vrcx_enabled", True) else [])
             return
         if path == "/voices":   # こえおぼえ: 直近のフレンド発話 + 声紋プロフィール要約
             recent = []
@@ -2278,15 +2438,17 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if path == "/lookup":
             q = parse_qs(query).get("q", [""])[0]
-            self._send_json(growth.lookup(q))
+            self._send_json(growth.lookup(q) if CFG.get("vrcx_enabled", True) else [])
             return
         if path == "/status":
             load_cfg()
             names = {"jp": "日本語モード", "en": "英語モード", "auto": "じどう"}
             cur = _html.escape(str(active_model()))
             b = growth.bond()
-            pres = "、".join(_html.escape(n) for n in growth.present_names()) or "だれもいない"
-            circle = {"en": "えいご", "jp": "にほんご"}.get(growth.circle_lang(), "-")
+            pres = ("、".join(_html.escape(n) for n in growth.present_names())
+                    if CFG.get("vrcx_enabled", True) else "VRCX OFF")
+            circle = ({"en": "えいご", "jp": "にほんご"}.get(growth.circle_lang(), "-")
+                      if CFG.get("vrcx_enabled", True) else "-")
             sense = _html.escape(vrcx_sense.status_line())
             warn = ""
             if _SUBST["want"]:   # 設定のモデルが未インストール→代用中(配布直後によくある)
@@ -2400,6 +2562,11 @@ class _UIHandler(BaseHTTPRequestHandler):
             "pet_name": (q.get("pet_name", [""])[0].strip() or DEFAULTS["pet_name"])[:16],
             "pet_name_en": (q.get("pet_name_en", [""])[0].strip() or DEFAULTS["pet_name_en"])[:32],
             "owner_name": q.get("owner_name", [""])[0].strip()[:32],
+            "core_prompt_enabled": "core_prompt_enabled" in q,
+            "core_identity": (q.get("core_identity", [""])[0].strip()
+                              or DEFAULTS["core_identity"])[:500],
+            "core_friend_intro": (q.get("core_friend_intro", [""])[0].strip()
+                                  or DEFAULTS["core_friend_intro"])[:500],
             "reply_chance": num("reply_chance", 0.0, 1.0, 100),
             "friend_reply_chance": num("friend_reply_chance", 0.0, 1.0, 100),
             "cooldown": num("cooldown", 0.0, 300.0),
@@ -2410,6 +2577,11 @@ class _UIHandler(BaseHTTPRequestHandler):
                             if q.get("trait_weight", ["mid"])[0] in ("low", "mid", "high") else "mid",
             "persona_weight": q.get("persona_weight", ["mid"])[0]
                               if q.get("persona_weight", ["mid"])[0] in ("low", "mid", "high") else "mid",
+            "persona_character_enabled": "persona_character_enabled" in q,
+            "persona_talk_enabled": "persona_talk_enabled" in q,
+            "persona_preferences_enabled": "persona_preferences_enabled" in q,
+            "persona_free_text_enabled": "persona_free_text_enabled" in q,
+            "persona_examples_enabled": "persona_examples_enabled" in q,
             "typing_speed": num("typing_speed", 0.0, 0.5),
             "center_jp": int(num("center_jp", 0, 31)),
             "center_en": int(num("center_en", 0, 31)),
@@ -2441,6 +2613,10 @@ class _UIHandler(BaseHTTPRequestHandler):
             "model": (q.get("model", [""])[0].strip() or DEFAULTS["model"])[:120],
             "model_en": (q.get("model_en", [""])[0].strip() or DEFAULTS["model_en"])[:120],
             "mode": q.get("mode", ["auto"])[0] if q.get("mode", ["auto"])[0] in ("auto", "jp", "en") else "auto",
+            "core_identity_en": (q.get("core_identity_en", [""])[0].strip()
+                                 or DEFAULTS["core_identity_en"])[:500],
+            "core_friend_intro_en": (q.get("core_friend_intro_en", [""])[0].strip()
+                                     or DEFAULTS["core_friend_intro_en"])[:500],
             "think": "think" in q,
             "kanji_mode": "kanji_mode" in q,
             "osc_proxy": "osc_proxy" in q,
@@ -2457,6 +2633,16 @@ class _UIHandler(BaseHTTPRequestHandler):
             "care_hours": num("care_hours", 0.0, 24.0),
             "care_hour": int(num("care_hour", 0, 23)),
             "diary": "diary" in q,
+            "advanced_growth_enabled": "advanced_growth_enabled" in q,
+            "advanced_sense_enabled": "advanced_sense_enabled" in q,
+            "advanced_listener_enabled": "advanced_listener_enabled" in q,
+            "advanced_rules_enabled": "advanced_rules_enabled" in q,
+            "advanced_aizuchi_enabled": "advanced_aizuchi_enabled" in q,
+            "advanced_safety_enabled": "advanced_safety_enabled" in q,
+            "vrcx_enabled": "vrcx_enabled" in q,
+            "memory_conversation_enabled": "memory_conversation_enabled" in q,
+            "memory_words_enabled": "memory_words_enabled" in q,
+            "memory_diary_enabled": "memory_diary_enabled" in q,
         }
         for k, *_ in TRAITS:
             cfg[k] = int(num(k, 0, 100))
@@ -2537,6 +2723,8 @@ def main():
     def aizuchi():
         """LLMを呼ばずに即出す反応。本返事を作るあいだ「聞いてる」を見せる"""
         nonlocal shown_at, last_aizuchi, hide_hold
+        if not CFG.get("advanced_aizuchi_enabled", True):
+            return
         if time.time() - last_said < SAID_HOLD:
             return   # 純正が文字盤を使っている最中に割り込まない
         pool = aizuchi_pool(effective_mode() == "en")
@@ -2563,7 +2751,8 @@ def main():
             page_queue.clear()   # 点々が盤面を消すので、前の返答の続きページも破棄
             _dots_start("", already_shown=False,   # listen_window=0で相槌なしの直接返答
                         hold_check=lambda: time.time() - last_said < SAID_HOLD)
-        hist = history[-HISTORY_TURNS * 2:-1] if exclude_last else history[-HISTORY_TURNS * 2:]
+        hist = (history[-HISTORY_TURNS * 2:-1] if exclude_last else history[-HISTORY_TURNS * 2:]
+                if CFG.get("memory_conversation_enabled", True) else [])
         try:
             try:
                 raw = gen_reply(hist, prompt_text)
@@ -2604,8 +2793,9 @@ def main():
             shown_at = time.time()
             hide_hold = _hold_for(pages[0])
             last_reply = shown_at
-            save_conv("assistant", reply)
-            history.append(("assistant", reply))
+            if CFG.get("memory_conversation_enabled", True):
+                save_conv("assistant", reply)
+                history.append(("assistant", reply))
             return True
         finally:
             _dots_stop()   # スキップ経路でも点々を止める(相槌だけ残しHIDE_AFTERで消灯)
@@ -2656,13 +2846,14 @@ def main():
                 vrcx_sense.reload_titles()
                 log(f"「{word}」を含む記憶を{n}行けしました(バックアップ保存済み)")
             heard = [("owner", t) for t in drain(tail.poll())]
-            heard += [("owner", (ev.get("text") or "").strip())
-                      for ev in owner_mic.poll() if (ev.get("text") or "").strip()]
-            for ev in others.poll():
-                t = (ev.get("text") or "").strip()
-                if t:
-                    growth.hear_lang(ev.get("lang"), uid=ev.get("who"))   # 界隈票(声紋一致なら本人へ)
-                    heard.append((growth.display_name(ev.get("who")) or "friend", t))
+            if CFG.get("advanced_listener_enabled", True):
+                heard += [("owner", (ev.get("text") or "").strip())
+                          for ev in owner_mic.poll() if (ev.get("text") or "").strip()]
+                for ev in others.poll():
+                    t = (ev.get("text") or "").strip()
+                    if t:
+                        growth.hear_lang(ev.get("lang"), uid=ev.get("who"))   # 界隈票(声紋一致なら本人へ)
+                        heard.append((growth.display_name(ev.get("who")) or "friend", t))
             now = time.time()
 
             if _PROXY_Q and shown_at is None:   # 自分の表示が無いときだけ純正セリフを中継表示
@@ -2695,8 +2886,9 @@ def main():
                 if len(seen_heard) > 200:
                     seen_heard = {k: v for k, v in seen_heard.items() if now - v < 60}
                 tagged = text if who == "owner" else f"[{who}] {text}"
-                save_conv("user", tagged)
-                history.append(("user", tagged))
+                if CFG.get("memory_conversation_enabled", True):
+                    save_conv("user", tagged)
+                    history.append(("user", tagged))
                 last_heard = now
                 fresh.append((who, text, tagged))
             if fresh:
@@ -2707,7 +2899,8 @@ def main():
                 if len(fresh) > 1:
                     log(f"（{len(fresh) - 1}件は履歴だけに記録して、最新に返事）")
                 if who == "owner":
-                    growth.bump(named=bool(named_items))
+                    if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True):
+                        growth.bump(named=bool(named_items))
                 chance = CFG["reply_chance"] if who == "owner" else CFG["friend_reply_chance"]
                 casual = (random.random() < chance
                           and now - last_reply > CFG["cooldown"]
@@ -2737,13 +2930,17 @@ def main():
             quiet = (now - last_heard > 5
                      and now - last_reply > CFG["cooldown"]
                      and pending is None)
-            greet = growth.poll(now, quiet=quiet)
+            greet = (growth.poll(now, quiet=quiet)
+                     if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True)
+                     else None)
             if greet and CFG.get("greet_friends", True):
                 log(f"あいさつ: {greet}")
                 say(greet)
             else:
                 # 状況(ワールド・曲・よふかし・日記)への一言。挨拶がある周期はゆずる
-                ev = vrcx_sense.poll(now, quiet=quiet)
+                ev = (vrcx_sense.poll(now, quiet=quiet)
+                      if CFG.get("vrcx_enabled", True) and CFG.get("advanced_sense_enabled", True)
+                      else None)
                 if ev:
                     log(f"じょうきょう: {ev}")
                     say(ev)
@@ -2758,7 +2955,9 @@ def main():
             if idle_iv > 0 and time.time() > idle_at:
                 idle_at = time.time() + idle_iv * random.uniform(0.8, 1.6)
                 # なかまが在室なら、たまにひとりごとの代わりにちょっかいを出す
-                mates = [n for n in growth.poke_names() if to_board_text(n)]
+                mates = ([n for n in growth.poke_names() if to_board_text(n)]
+                         if CFG.get("vrcx_enabled", True) and CFG.get("advanced_growth_enabled", True)
+                         else [])
                 if len(mates) > 1 and last_poke in mates:
                     mates.remove(last_poke)   # 連続で同じ人にしつこくしない
                 if silence > 1800:

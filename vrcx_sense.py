@@ -19,6 +19,10 @@ CARE_IV = 3600         # よふかし注意の最短間隔秒
 
 # muchio側DEFAULTSと同値のフォールバック(growth._KNOBSと同じ流儀)
 _KNOBS = {
+    "vrcx_enabled": True,
+    "advanced_sense_enabled": True,
+    "memory_conversation_enabled": True,
+    "memory_diary_enabled": True,
     "world_comment_chance": 0.5,   # ワールドが変わったとき一言いう率
     "song_comment_chance": 0.25,   # 曲が流れはじめたとき一言いう率
     "care_hours": 6.0,             # きょうのプレイがこの時間を超えたら気づかう(0=off)
@@ -282,6 +286,8 @@ def _pop_comment(quiet):
 def poll(now, quiet=True):
     """メインループから毎周期呼ぶ。5秒ごとにDBを見て、quietのときだけ一言を返す。"""
     global _last_poll, _vid_id, _song, _playtime_h, _last_care
+    if not _cfg("vrcx_enabled") or not _cfg("advanced_sense_enabled"):
+        return None
     if _dead or now - _last_poll < POLL_IV:
         return _pop_comment(quiet)
     _last_poll = now
@@ -345,6 +351,8 @@ def poll(now, quiet=True):
 # ---------------------------------------------------------------- プロンプト・UI
 def prompt_lines(en=False):
     """system_prompt末尾に足す状況行。データ形だけで形容詞・文型は注入しない(アトラクタ対策)"""
+    if not _cfg("vrcx_enabled") or not _cfg("advanced_sense_enabled"):
+        return ""
     now = time.time()
     out = ""
     if _world:
@@ -356,14 +364,14 @@ def prompt_lines(en=False):
         if t:
             out += (f"Now playing: {t} (x{_song['plays']}). " if en
                     else f"いまのきょく: {t}({_song['plays']}かいめ)。")
-    if _memory:
+    if _memory and _cfg("memory_conversation_enabled"):
         out += (f"Memories of this place: {_memory}. " if en
                 else f"このばしょのおもいで: {_memory}。")
     ch = float(_cfg("care_hours"))
     if ch > 0 and _playtime_h >= ch:
         out += (f"Owner has played {_playtime_h:.0f}h today. " if en
                 else f"きょうのぷれいじかん: {int(_playtime_h)}じかん。")
-    d = _diary["_en" if en else ""]
+    d = _diary["_en" if en else ""] if _cfg("memory_diary_enabled") else []
     if d:
         ent = " ／ ".join(f"{int(e['date'][5:7])}/{int(e['date'][8:10])} {e['text'][:60]}"
                           for e in d[-3:])
@@ -420,7 +428,8 @@ def _diarist():
     time.sleep(60)   # 起動直後(ウォームアップ・自己チェック)をさける
     while True:
         try:
-            if _cfg("diary"):
+            if (_cfg("vrcx_enabled") and _cfg("advanced_sense_enabled")
+                    and _cfg("memory_diary_enabled") and _cfg("diary")):
                 _write_diary()
         except Exception as e:
             _log(f"にっき失敗: {e}")
@@ -472,7 +481,7 @@ def _day_conv(sfx, d0):
 
 def _gen_diary(sfx, target, d0, worlds, met, songs, hours):
     """1界隈ぶんの日記本文を生成。EN側はその日のEN会話がなければ書かない"""
-    conv = _day_conv(sfx, d0)
+    conv = _day_conv(sfx, d0) if _cfg("memory_conversation_enabled") else []
     if sfx and not conv:
         return ""
     en = bool(sfx)

@@ -22,6 +22,20 @@
 <button type="button" id="run-update" disabled>アップデート</button>
 </div>
 </section>
+<section class="card wide prompt-card" aria-labelledby="prompt-title">
+<div id="promptbox">
+<div class="prompt-head"><b id="prompt-title">いまLLMに渡る設定・状況プロンプト</b><small>設定を保存すると、ここも数秒で更新されます</small></div>
+<div class="prompt-impact">
+<span><b>人格</b> せいかく・はなしかた・こだわり・自由テキスト・れいぶん</span>
+<span><b>基本説明</b> ペットの立ち位置・フレンド発言の見分け方</span>
+<span><b>VRCX</b> なかま・せかい・場所の思い出・日記</span>
+<span><b>会話の記憶</b> 直近の会話履歴・場所の思い出</span>
+<span><b>単語の記憶</b> 主にひとりごとの話題選び</span>
+<span><b>あいづち・耳</b> プロンプト外で即時反応・音声認識に影響</span>
+</div>
+<pre id="promptview">よみこみ中...</pre>
+</div>
+</section>
 <form id="cfg" method="post" action="/save">
 <input type="hidden" name="cfg_mtime" value="">
 <div class="grid">
@@ -52,13 +66,30 @@
 <small>あなたのVRChat表示名。だれが飼い主かをペットに教えます</small></div>
 </section>
 
+<section class="card wide ts"><h2>基本説明(LLMに見せる)</h2>
+<p class="desc">ペットの立ち位置や、フレンド発言の見分け方。ここは自由に書き換えられます。</p>
+<label class="check"><input type="checkbox" name="core_prompt_enabled"> 基本説明をLLMに渡す</label>
+<div class="field"><label>日本語</label>
+<textarea name="core_identity" rows="2"></textarea>
+<small>{name}=ペット名、{owner}=飼い主名。空欄で保存すると初期文に戻ります。</small></div>
+<div class="field"><label>フレンド発言の説明(日本語)</label>
+<textarea name="core_friend_intro" rows="2"></textarea></div>
+<div class="field"><label>英語</label>
+<textarea name="core_identity_en" rows="2"></textarea></div>
+<div class="field"><label>フレンド発言の説明(英語)</label>
+<textarea name="core_friend_intro_en" rows="2"></textarea></div>
+</section>
+
 <section class="card ts"><h2>おしゃべり</h2>
-<p class="desc">どのくらいの頻度・長さでしゃべるか</p>
+<p class="desc">どのくらいの頻度・長さでしゃべるか。自発話や割り込みもここで設定します</p>
 <div class="field"><div class="lr"><label>あなたへの反応率</label><output>%</output></div>
 <input type="range" name="reply_chance" min="0" max="100" step="5" value="">
 <small>名前を呼ばれたときは率に関係なく必ず返事します</small></div>
 <div class="field"><div class="lr"><label>フレンドへの割り込み率</label><output>%</output></div>
 <input type="range" name="friend_reply_chance" min="0" max="100" step="5" value=""></div>
+<div class="field"><div class="lr"><label>ちょっかい率</label><output>%</output></div>
+<input type="range" name="poke_chance" min="0" max="100" step="5" value="">
+<small>ひとりごとの代わりに、いまいるなかまに話しかける</small></div>
 <div class="field"><div class="lr"><label>クールダウン(秒)</label>
 <input type="number" name="cooldown" min="0" max="120" step="1" value=""></div>
 <small>名前なし反応の最短間隔</small></div>
@@ -117,17 +148,28 @@
 <div class="field"><label>テンプレからはじめる</label>
 <div class="tools" id="presets"></div>
 <small>おすと、スライダー・こだわり・人格・れいぶんに一式が入ります。「ほぞん」を押すまで確定しません(やめるときはページを読み込み直す)</small></div>
-<h3>せいかく</h3>
+<div class="setting-category" data-category="persona-character">
+<div class="category-head"><h3>せいかく</h3><label class="category-toggle"><input type="checkbox" name="persona_character_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">はしに寄せるほど強い指示になります。まんなかはなにも足しません</p>
 <div id="traits-character"></div>
 <div class="field"><div class="lr"><label>せいかくの効きぐあい</label>
 <select name="trait_weight" style="width:auto"></select></div>
 <small>よわめ=うっすら傾向 / ふつう / つよめ=ほかの指示より優先</small></div>
-<h3>はなしかた</h3>
+</div></div>
+<div class="setting-category" data-category="persona-talk">
+<div class="category-head"><h3>はなしかた</h3><label class="category-toggle"><input type="checkbox" name="persona_talk_enabled" checked> 有効</label></div>
+<div class="category-body">
 <div id="traits-talk"></div>
-<h3>こだわり</h3>
+</div></div>
+<div class="setting-category" data-category="persona-preferences">
+<div class="category-head"><h3>こだわり</h3><label class="category-toggle"><input type="checkbox" name="persona_preferences_enabled" checked> 有効</label></div>
+<div class="category-body">
 <div id="rule-toggles"></div>
-<h3>じゆうテキスト(人格)</h3>
+</div></div>
+<div class="setting-category" data-category="persona-free-text">
+<div class="category-head"><h3>じゆうテキスト(人格)</h3><label class="category-toggle"><input type="checkbox" name="persona_free_text_enabled" checked> 有効</label></div>
+<div class="category-body">
 <div class="field"><label>人格</label>
 <textarea name="persona" rows="4"></textarea>
 <small>どんな子か・口調・話題のクセを自由に(うんちくbotでもキャラでも)。短い一言・ナレーション禁止などの基本ルールは自動で付きます(漢字で書いても盤面はひらがなに変換)。{name}と書くとペットの名前が入ります。空にして保存すると初期文に戻ります</small></div>
@@ -137,34 +179,42 @@
 <div class="field"><div class="lr"><label>人格の効きぐあい</label>
 <select name="persona_weight" style="width:auto"></select></div>
 <small>スライダーとじゆうテキストがけんかしたときの、テキスト側のつよさ</small></div>
-<h3>れいぶん</h3>
+</div></div>
+<div class="setting-category" data-category="persona-examples">
+<div class="category-head"><h3>れいぶん</h3><label class="category-toggle"><input type="checkbox" name="persona_examples_enabled" checked> 有効</label></div>
+<div class="category-body">
 <div class="field"><label>れいぶん(にほんご)</label>
 <textarea name="examples" rows="2"></textarea>
 <small>「きかれたこと」→「返し」の強いお手本。キャラの口調はここが一番効きます。{name}=ペットの名前。空にして保存すると初期文に戻ります</small></div>
 <div class="field"><label>れいぶん(えいご)</label>
 <textarea name="examples_en" rows="2"></textarea></div>
+</div></div>
 </section>
 
-<section class="card tj"><h2>まもりのルール</h2>
+<section class="card tj setting-category" data-category="advanced-rules"><div class="category-head"><h2>まもりのルール</h2><label class="category-toggle"><input type="checkbox" name="advanced_rules_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">個人情報・AI暴きへの返しかたのルール文。空にして保存すると初期文に戻ります</p>
+<small class="category-note">OFFにすると、ここで編集するルールだけでなく、基本ルールもLLMへ渡しません。</small>
 <div class="field"><label>まもりのルール(にほんご)</label>
 <textarea name="rules" rows="7"></textarea>
 <small>{fake}=うそプロフィールの指示文({fake}を消すと、うそプロフィールを使わなくなります)</small></div>
 <div class="field"><label>まもりのルール(えいご)</label>
 <textarea name="rules_en" rows="6"></textarea>
 <small>{fake}=うそプロフィール(英語)の指示文 に置き換わります</small></div>
-</section>
+</div></section>
 
-<section class="card tj"><h2>あいづち</h2>
+<section class="card tj setting-category" data-category="advanced-aizuchi"><div class="category-head"><h2>あいづち</h2><label class="category-toggle"><input type="checkbox" name="advanced_aizuchi_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">LLMを通さず即出す短い反応。、区切りでならべます(空にして保存すると初期リストに戻る)</p>
 <div class="field"><label>あいづち(にほんご)</label>
 <textarea name="aizuchi" rows="2"></textarea></div>
 <div class="field"><label>あいづち(えいご)</label>
 <textarea name="aizuchi_en" rows="2"></textarea>
 <small>盤面フォントに無い文字は消えるので、出ない言葉があったら文字を変えてみてください</small></div>
-</section>
+</div></section>
 
-<section class="card tj"><h2>まもり</h2>
+<section class="card tj setting-category" data-category="advanced-safety"><div class="category-head"><h2>まもり</h2><label class="category-toggle"><input type="checkbox" name="advanced_safety_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">危険質問あそび用のデータ。ルール文の{fake}などから参照されます</p>
 <div class="field"><label>うそプロフィール</label>
 <textarea name="fake_profile" rows="3"></textarea>
@@ -178,14 +228,11 @@
 <div class="field"><label>そうていもんどう</label>
 <textarea name="qa_notes" rows="4"></textarea>
 <small>よく聞かれる質問→返しかたの手本を1行ずつ(例: なんさい？→ひみつだよ)。まる写しせず毎回くずして使います</small></div>
-</section>
+</div></section>
 
-<section class="card ta"><h2>そだち</h2>
+<section class="card ta setting-category" data-category="advanced-growth"><div class="category-head"><h2>そだち</h2><label class="category-toggle"><input type="checkbox" name="advanced_growth_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">なつき方と、なかまの覚え方</p>
-<label class="check"><input type="checkbox" name="greet_friends"> なかまが来たら気づいて一言いう</label>
-<div class="field"><div class="lr"><label>ちょっかい率</label><output>%</output></div>
-<input type="range" name="poke_chance" min="0" max="100" step="5" value="">
-<small>ひとりごとの代わりに、いまいるなかまに話しかける</small></div>
 <div class="field"><div class="lr"><label>なつきやすさ(倍率)</label>
 <input type="number" name="bond_gain" min="0" max="5" step="0.1" value=""></div>
 <small>会話でなつき度が上がる速さ。1.0が標準</small></div>
@@ -201,9 +248,10 @@
 <div class="field"><div class="lr"><label>フレンド外を覚える日数</label>
 <input type="number" name="auto_adopt_days" min="0" max="100" step="1" value=""></div>
 <small>フレンドじゃなくても、会った日数がこれ以上なら自動でなかまにする。0=しない</small></div>
-</section>
+</div></section>
 
-<section class="card ta"><h2>せかい</h2>
+<section class="card ta setting-category" data-category="advanced-sense"><div class="category-head"><h2>せかい</h2><label class="category-toggle"><input type="checkbox" name="advanced_sense_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">ばしょ・きょく・時間への気づき</p>
 <div class="field"><div class="lr"><label>ばしょのひとこと率</label><output>%</output></div>
 <input type="range" name="world_comment_chance" min="0" max="100" step="5" value="">
@@ -218,9 +266,10 @@
 <input type="number" name="care_hour" min="0" max="23" step="1" value=""></div>
 <small>この時(24h表記)からあさ6時まで言う</small></div>
 <label class="check"><input type="checkbox" name="diary"> まいにち日記をかく(ペットの長期記憶になる)</label>
-</section>
+</div></section>
 
-<section class="card ta"><h2>耳(リスナー)</h2>
+<section class="card ta setting-category" data-category="advanced-listener"><div class="category-head"><h2>耳(リスナー)</h2><label class="category-toggle"><input type="checkbox" name="advanced_listener_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">こえの拾い方と聞き取り</p>
 <div class="field"><div class="lr"><label>音量ゲート</label>
 <input type="number" name="rms_gate" min="50" max="5000" step="50" value=""></div>
@@ -236,7 +285,7 @@
 <div class="field"><div class="lr"><label>こえ判定のきびしさ</label>
 <input type="number" name="voice_threshold" min="0.3" max="0.9" step="0.05" value=""></div>
 <small>上げると他人空似が減るが、本人も名無しになりやすい。反映まで最大15秒</small></div>
-</section>
+</div></section>
 
 </div>
 </form>
@@ -249,7 +298,8 @@
 <div id="voices">よみこみ中...</div>
 </section>
 
-<section class="card wide ta"><h2>なかま</h2>
+<section class="card wide ta setting-category" data-category="vrcx"><div class="category-head"><h2>なかま / VRCX連携</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="vrcx_enabled" checked> 有効</label></div>
+<div class="category-body">
 <div class="tools">
 <input id="fq" placeholder="なまえで検索" oninput="drawF()">
 <button type="button" class="ghost" onclick="LIM+=20;drawF()">もっと見る</button>
@@ -257,11 +307,14 @@
 </div>
 <div id="friends">よみこみ中...</div>
 <div id="look"></div>
-</section>
+<label class="check"><input type="checkbox" name="greet_friends"> なかまが来たら気づいて一言いう</label>
+</div></section>
 
 <section class="card wide ta"><h2>記憶ぜんぶ</h2>
 <p class="desc">会話・日記・いまLLMに渡る追加情報。検索すると古い記憶まで探せます。いらない行は1件ずつ消せます</p>
 <div class="mem-head">
+<label class="memory-toggle"><input data-config-toggle type="checkbox" name="memory_conversation_enabled" checked> 会話の記憶</label>
+<label class="memory-toggle"><input data-config-toggle type="checkbox" name="memory_diary_enabled" checked> 日記の記憶</label>
 <select id="mk" onchange="loadM()">
 <option value="all">全部</option>
 <option value="conversation">会話</option>
@@ -274,14 +327,14 @@
 <input id="mq" placeholder="月光浴 などで検索" oninput="loadM()">
 <button type="button" class="ghost" onclick="document.getElementById('mq').value='';loadM()">ぜんぶ</button>
 </div>
-<details id="promptbox"><summary><small>いまLLMに渡る設定・状況プロンプトを見る</small></summary><pre id="promptview">よみこみ中...</pre></details>
 <div id="memory">よみこみ中...</div>
 </section>
 
-<section class="card wide ta"><h2>おぼえてることば</h2>
+<section class="card wide ta setting-category" data-category="memory-words"><div class="category-head"><h2>おぼえてることば / 単語の記憶</h2><label class="category-toggle"><input data-config-toggle type="checkbox" name="memory_words_enabled" checked> 有効</label></div>
+<div class="category-body">
 <p class="desc">会話と日記によく出る単語。ありふれたことばはたたんであります。クリックすると、その単語を含む会話と日記をわすれます</p>
 <div id="words">よみこみ中...</div>
-</section>
+</div></section>
 
 <section class="card wide ts"><h2>会話ログ</h2>
 <div class="tools">

@@ -7,7 +7,14 @@ function toast(msg, err){
 
 let BOOT = null;
 const PERCENT_FIELDS = new Set(['reply_chance','friend_reply_chance','poke_chance','world_comment_chance','song_comment_chance']);
-const CHECK_FIELDS = new Set(['think','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names']);
+const CHECK_FIELDS = new Set(['think','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
+  'persona_character_enabled','persona_talk_enabled','persona_preferences_enabled','persona_free_text_enabled','persona_examples_enabled',
+  'advanced_growth_enabled','advanced_sense_enabled','advanced_listener_enabled','advanced_rules_enabled','advanced_aizuchi_enabled','advanced_safety_enabled']);
+CHECK_FIELDS.add('core_prompt_enabled');
+CHECK_FIELDS.add('vrcx_enabled');
+CHECK_FIELDS.add('memory_conversation_enabled');
+CHECK_FIELDS.add('memory_words_enabled');
+CHECK_FIELDS.add('memory_diary_enabled');
 const DEFAULT_WEIGHT_OPTIONS = [{value:'low', label:'よわめ'}, {value:'mid', label:'ふつう'}, {value:'high', label:'つよめ'}];
 function optHtml(items, selected){
   return items.map(o=>`<option value="${esc(o.value)}"${o.value===selected?' selected':''}>${esc(o.label)}</option>`).join('');
@@ -29,8 +36,39 @@ function renderRuleToggles(items, cfg){
     `<label class="check"><input type="checkbox" name="${esc(r.key)}"${cfg[r.key]?' checked':''}> ${esc(r.label)}</label>`
   ).join('');
 }
+function applyCategoryState(category){
+  const toggle = category.querySelector('.category-toggle input');
+  if(!toggle) return;
+  const on = toggle.checked;
+  category.classList.toggle('is-off', !on);
+  category.setAttribute('aria-disabled', on ? 'false' : 'true');
+  category.querySelectorAll('.category-body input,.category-body select,.category-body textarea').forEach(el=>{
+    el.tabIndex = on ? 0 : -1;
+  });
+}
+function initCategoryToggles(){
+  document.querySelectorAll('.setting-category').forEach(category=>{
+    const toggle = category.querySelector('.category-toggle input');
+    if(!toggle || toggle.dataset.bound) return;
+    toggle.dataset.bound = '1';
+    toggle.addEventListener('change', ()=>{
+      applyCategoryState(category);
+      $('savebar').classList.add('on');
+    });
+    applyCategoryState(category);
+  });
+}
+function initExternalToggles(){
+  document.querySelectorAll('input[data-config-toggle][type="checkbox"]').forEach(toggle=>{
+    if(toggle.dataset.bound) return;
+    toggle.dataset.bound = '1';
+    toggle.addEventListener('change', ()=>{
+      $('savebar').classList.add('on');
+    });
+  });
+}
 function setField(form, name, value){
-  const els = Array.from(form.elements).filter(el => el.name === name);
+  const els = Array.from(document.querySelectorAll('[name]')).filter(el => el.name === name);
   els.forEach(el=>{
     if(el.type === 'checkbox') el.checked = !!value;
     else el.value = value ?? '';
@@ -61,6 +99,8 @@ function applyBootstrap(d){
     setField(form, k, v);
   }
   CHECK_FIELDS.forEach(k=>setField(form, k, !!cfg[k]));
+  initCategoryToggles();
+  initExternalToggles();
   form.cfg_mtime.value = d.cfg_mtime || '';
   initPresets();
 }
@@ -143,6 +183,8 @@ function initPresets(){
   const box = document.getElementById('presets'), f = document.getElementById('cfg');
   box.innerHTML = '';
   for(const k of Object.keys(PRESETS)){
+    const item = document.createElement('div');
+    item.className = 'preset-choice';
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'tab'; b.textContent = k;
     b.addEventListener('click', ()=>{
@@ -158,7 +200,10 @@ function initPresets(){
       $('savebar').classList.add('on');
       toast('テンプレ「' + k + '」を入れました。「ほぞん」を押すと反映されます');
     });
-    box.appendChild(b);
+    const d = document.createElement('small');
+    d.textContent = PRESETS[k].description || '人格・話し方・例文をまとめて入れます。';
+    item.append(b, d);
+    box.appendChild(item);
   }
 }
 
@@ -174,7 +219,14 @@ cfg.addEventListener('input', e=>{
 cfg.addEventListener('submit', async e=>{
   e.preventDefault();
   let r;
-  try{ r = await fetch('/save', {method:'POST', body:new URLSearchParams(new FormData(cfg))}); }
+  const payload = new URLSearchParams(new FormData(cfg));
+  document.querySelectorAll('input[data-config-toggle][type="checkbox"]').forEach(el=>{
+    if(!cfg.contains(el)){
+      payload.delete(el.name);
+      if(el.checked) payload.append(el.name, 'on');
+    }
+  });
+  try{ r = await fetch('/save', {method:'POST', body:payload}); }
   catch(_){ toast('サーバにつながりません', true); return; }
   let d = {}; try{ d = await r.json(); }catch(_){}
   if(r.ok && d.ok){
@@ -182,6 +234,7 @@ cfg.addEventListener('submit', async e=>{
     $('ttl').textContent = cfg.pet_name.value.trim() || $('ttl').textContent;
     $('savebar').classList.remove('on');
     toast('ほぞんしました（数秒で反映されます）');
+    loadM();
   }else if(r.status === 409){
     toast('べつの画面で設定が変わっています。ページを読み込み直してください', true);
   }else{
