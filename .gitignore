@@ -8,3 +8,6 @@ __pycache__/vrcx_sense.cpython-310.pyc
 data/
 
 config.json
+
+__pycache__/
+*.pyc
