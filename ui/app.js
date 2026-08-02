@@ -98,7 +98,7 @@ async function updateStatus(fetchRemote){
     const d = await (await fetch('/update_status' + (fetchRemote ? '?fetch=1' : ''))).json();
     updateState.textContent = d.message || '更新情報を確認できませんでした';
     updateState.className = 'update-state ' + (d.ok ? (d.behind > 0 ? 'warn' : 'good') : 'err');
-    runUpdate.disabled = !(d.ok && d.behind > 0 && d.ahead === 0 && !d.dirty);
+    runUpdate.disabled = !(d.ok && d.behind > 0 && d.ahead === 0);
   }catch(e){
     updateState.textContent = '更新情報を確認できませんでした';
     updateState.className = 'update-state err';

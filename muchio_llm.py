@@ -2088,7 +2088,7 @@ def _git_text(args, timeout=12):
     return (p.stdout or "").strip()
 
 def _update_info(fetch_remote=False):
-    """設定UI用の更新状況。作業ツリーを守るため、dirtyなら更新ボタンは出さない。"""
+    """設定UI用の更新状況。ローカル設定差分はautostashで残したまま更新できる。"""
     if not (HERE / ".git").exists():
         return {"ok": False, "message": "アップデート情報を確認できません(Git管理ではありません)"}
     if _git_cmd(["--version"]) is None:
@@ -2121,7 +2121,7 @@ def _update_info(fetch_remote=False):
     if dirty and not fetch_remote:
         message = "更新チェックで最新版を確認できます"
     elif dirty:
-        message = "未保存のファイル変更があります。アップデート前にコミットか退避をしてください"
+        message = "ローカル設定などの変更は残したままアップデートできます"
     elif ahead and behind:
         message = "ローカルとGitHubの両方に変更があります。手動で確認してください"
     elif behind:
@@ -2139,8 +2139,6 @@ def _run_update():
     info = _update_info(fetch_remote=True)
     if not info.get("ok"):
         return info
-    if info.get("dirty"):
-        return {"ok": False, "message": "未保存のファイル変更があるため、アップデートを中止しました"}
     if info.get("ahead", 0):
         return {"ok": False, "message": "ローカル変更があるため、自動アップデートできません"}
     if info.get("behind", 0) <= 0:
@@ -2148,7 +2146,7 @@ def _run_update():
 
     remote_ref = info.get("remote") or "origin/main"
     remote_name, remote_branch = remote_ref.split("/", 1) if "/" in remote_ref else ("origin", remote_ref)
-    p = _git_cmd(["pull", "--ff-only", "--quiet", remote_name, remote_branch], timeout=60)
+    p = _git_cmd(["pull", "--ff-only", "--autostash", "--quiet", remote_name, remote_branch], timeout=60)
     if p is None or p.returncode != 0:
         msg = (p.stderr or p.stdout or "git pull に失敗しました").strip() if p else "git が見つかりません"
         return {"ok": False, "message": "アップデートできませんでした: " + msg}
