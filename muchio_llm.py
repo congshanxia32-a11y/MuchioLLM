@@ -9,7 +9,7 @@ VRCPet・Unity・アバターは無改造。stdlibのみ（依存ゼロ）。
   python muchio_llm.py --say てすと    # 文字盤に一発表示（動作確認用）
   python muchio_llm.py --ask こんにちは # LLM返答を生成して表示のみ（送信しない）
 """
-import difflib, json, os, random, re, shutil, socket, struct, sys, threading, time, unicodedata, urllib.request
+import difflib, hashlib, json, os, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request
 from collections import deque
 from pathlib import Path
 
@@ -1098,9 +1098,260 @@ def load_history():
 _janome = None
 _WORDS_CACHE = {"key": None, "counts": {}}
 _WORDS_LOCK = threading.Lock()   # UIスレッドとメインループ(ひとりごと)の両方から使う
+_MEMORY_LOCK = threading.Lock()  # 記憶ファイルの手動削除と再集計を直列化する
 _JP_CHAR = r"[ぁ-ゖァ-ヺ一-鿿]"
 _JUDGE_PATH = DATA / "word_judge.json"
 _JUDGE = None   # {単語: True=おもしろい/False=ありふれた}。判定済みは再判定しない
+_MANUAL_PATH = DATA / "manual_words.json"
+_VIDEOS_PATH = DATA / "videos.json"
+
+def _manual_words():
+    try:
+        raw = json.loads(_MANUAL_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, list):
+        return []
+    return [str(w).strip() for w in raw if str(w).strip()]
+
+def _save_manual_words(words):
+    seen, out = set(), []
+    for w in words:
+        w = str(w).strip()
+        k = w.lower()
+        if w and k not in seen:
+            seen.add(k)
+            out.append(w[:80])
+    DATA.mkdir(exist_ok=True)
+    _MANUAL_PATH.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def _knowledge_lines():
+    return [l.strip() for l in str(CFG.get("knowledge") or "").splitlines() if l.strip()]
+
+def _knowledge_hits(text):
+    hits = []
+    for line in _knowledge_lines():
+        key = re.split(r"[:：\s]", line, 1)[0].strip()
+        if key and _has_word(text, key):
+            hits.append(line)
+    return " / ".join(hits)
+
+def _video_titles():
+    try:
+        raw = json.loads(_VIDEOS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(raw, dict):
+        return []
+    return [(str(k), str(v)) for k, v in raw.items()]
+
+def _save_video_titles(items):
+    DATA.mkdir(exist_ok=True)
+    _VIDEOS_PATH.write_text(json.dumps({k: v for k, v in items}, ensure_ascii=False, indent=2),
+                            encoding="utf-8")
+
+def _memory_sources():
+    return {
+        "conversation": (DATA / "conversation.jsonl", "会話(にほんご)"),
+        "conversation_en": (DATA / "conversation_en.jsonl", "会話(えいご)"),
+        "diary": (DATA / "diary.jsonl", "日記(にほんご)"),
+        "diary_en": (DATA / "diary_en.jsonl", "日記(えいご)"),
+    }
+
+def _memory_family(src):
+    if src.startswith("conversation"):
+        return "conversation"
+    if src.startswith("diary"):
+        return "diary"
+    if src in ("manual", "knowledge"):
+        return "notes"
+    if src == "video":
+        return "video"
+    return src
+
+def _memory_kind_sources(kind):
+    kind = (kind or "all").strip().lower()
+    if kind in ("", "all"):
+        return ("conversation", "conversation_en", "diary", "diary_en", "manual", "knowledge", "video")
+    if kind == "conversation":
+        return ("conversation", "conversation_en")
+    if kind == "diary":
+        return ("diary", "diary_en")
+    if kind == "notes":
+        return ("manual", "knowledge")
+    if kind == "video":
+        return ("video",)
+    return ()
+
+def _backup_path(path, kind):
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    bak = path.with_name(f"{path.stem}.{stamp}.{kind}.bak")
+    i = 0
+    while bak.exists():
+        i += 1
+        bak = path.with_name(f"{path.stem}.{stamp}-{i}.{kind}.bak")
+    return bak
+
+def _line_id(src, idx, line):
+    return f"{src}:{idx}:{hashlib.sha1(line.encode('utf-8')).hexdigest()[:12]}"
+
+def _memory_records(q="", limit=600):
+    """設定UIに出す、LLMへ入りうる長期/短期記憶の一覧。q指定時は全件検索。"""
+    q = (q or "").strip()
+    qh = _kanji_to_hira(q.lower()) if q else ""
+    suffix = db_suffix()
+    cur_conv = "conversation_en" if suffix == "_en" else "conversation"
+    cur_diary = "diary_en" if suffix == "_en" else "diary"
+    records, total = [], 0
+    for src, (path, label) in _memory_sources().items():
+        if not path.exists():
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        history_from = max(0, len(lines) - HISTORY_TURNS * 2)
+        diary_from = max(0, len(lines) - 3)
+        scan = enumerate(lines) if q else enumerate(lines[-limit:], max(0, len(lines) - limit))
+        for idx, line in scan:
+            if not line.strip():
+                continue
+            try:
+                j = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            text = str(j.get("text", ""))
+            hay = (text + " " + str(j.get("date", "")) + " " + str(j.get("role", ""))).lower()
+            if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+                continue
+            tags = []
+            if src == cur_conv and idx >= history_from:
+                tags.append("直近会話")
+            if src == cur_conv and idx >= max(0, len(lines) - 600) and text.startswith("["):
+                tags.append("フレンド文脈")
+            if src == cur_diary and idx >= diary_from:
+                tags.append("最近日記")
+            total += 1
+            records.append({
+                "id": _line_id(src, idx, line),
+                "source": label,
+                "ts": float(j.get("ts") or 0),
+                "date": str(j.get("date") or ""),
+                "role": str(j.get("role") or ("diary" if src.startswith("diary") else "")),
+                "text": text,
+                "tags": tags,
+            })
+    for src, label, lines in (("manual", "手動ことば", _manual_words()),
+                              ("knowledge", "ナレッジ", _knowledge_lines())):
+        for idx, text in enumerate(lines):
+            hay = text.lower()
+            if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+                continue
+            total += 1
+            records.append({
+                "id": _line_id(src, idx, text),
+                "source": label,
+                "ts": 0,
+                "date": "",
+                "role": "memo",
+                "text": text,
+                "tags": ["ひとりごと候補"] if src == "manual" else ["質問時だけ参照"],
+            })
+    for idx, (ytid, title) in enumerate(_video_titles()):
+        hay = (ytid + " " + title).lower()
+        if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+            continue
+        total += 1
+        records.append({
+            "id": _line_id("video", idx, ytid + "\t" + title),
+            "source": "動画タイトル",
+            "ts": 0,
+            "date": "",
+            "role": ytid,
+            "text": title,
+            "tags": ["曲コメント"],
+        })
+    records.sort(key=lambda r: (r["date"], r["ts"]), reverse=True)
+    if q:
+        records = records[:1000]
+    return {"query": q, "total": total, "records": records}
+
+def delete_memory_record(rid):
+    """UIの1行削除。行番号だけでなくハッシュも見るので、古い画面からの誤削除を避ける。"""
+    try:
+        src, idx_s, want = rid.split(":", 2)
+        idx = int(idx_s)
+    except (ValueError, AttributeError):
+        return 0
+    if src == "manual":
+        words = _manual_words()
+        if idx < 0 or idx >= len(words) or _line_id(src, idx, words[idx]).rsplit(":", 1)[-1] != want:
+            return 0
+        del words[idx]
+        _save_manual_words(words)
+        _WORDS_CACHE["key"] = None
+        return 1
+    if src == "knowledge":
+        lines = _knowledge_lines()
+        if idx < 0 or idx >= len(lines) or _line_id(src, idx, lines[idx]).rsplit(":", 1)[-1] != want:
+            return 0
+        del lines[idx]
+        cfg = dict(CFG)
+        cfg["knowledge"] = "\n".join(lines)
+        CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        load_cfg()
+        return 1
+    if src == "video":
+        items = _video_titles()
+        if idx < 0 or idx >= len(items):
+            return 0
+        ytid, title = items[idx]
+        if _line_id(src, idx, ytid + "\t" + title).rsplit(":", 1)[-1] != want:
+            return 0
+        if _VIDEOS_PATH.exists():
+            shutil.copy2(_VIDEOS_PATH, _backup_path(_VIDEOS_PATH, "delete"))
+        del items[idx]
+        _save_video_titles(items)
+        return 1
+    sources = _memory_sources()
+    if src not in sources:
+        return 0
+    path, _ = sources[src]
+    if not path.exists():
+        return 0
+    with _MEMORY_LOCK:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if idx < 0 or idx >= len(lines) or _line_id(src, idx, lines[idx]).rsplit(":", 1)[-1] != want:
+            return 0
+        shutil.copy2(path, _backup_path(path, "delete"))
+        del lines[idx]
+        path.write_text("".join(l + "\n" for l in lines), encoding="utf-8")
+        _WORDS_CACHE["key"] = None
+    return 1
+
+def delete_diary_entry(date, sfx=""):
+    """指定日のにっきを1件消す。sfxは '' または '_en'。テストとUI削除の共通口。"""
+    path = DATA / f"diary{sfx if sfx in ('', '_en') else ''}.jsonl"
+    if not path.exists():
+        return 0
+    n = 0
+    with _MEMORY_LOCK:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        keep = []
+        for line in lines:
+            try:
+                hit = json.loads(line).get("date") == date
+            except json.JSONDecodeError:
+                hit = False
+            if hit:
+                n += 1
+            else:
+                keep.append(line)
+        if n:
+            shutil.copy2(path, _backup_path(path, "delete"))
+            path.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
+            _WORDS_CACHE["key"] = None
+    return n
 
 def _word_counts():
     """会話+日記の頻出名詞を数える。ログが変わってなければキャッシュを返す"""
@@ -1216,9 +1467,13 @@ def _interesting_words(lang):
     """ひとりごとに使える「おもしろい」学習語。lang="jp"=日本語文字を含む語、"en"=それ以外"""
     counts = _word_counts()
     judge = _judge_words(counts)
-    return [w for w, n in counts.items()
-            if n >= 2 and judge.get(w, True)
-            and bool(re.search(_JP_CHAR, w)) == (lang == "jp")]
+    out = [w for w, n in counts.items()
+           if n >= 2 and judge.get(w, True)
+           and bool(re.search(_JP_CHAR, w)) == (lang == "jp")]
+    for w in _manual_words():
+        if bool(re.search(_JP_CHAR, w)) == (lang == "jp") and w not in out:
+            out.append(w)
+    return out
 
 def _words_html():
     """会話+日記の頻出名詞を界隈別のチップ一覧に。ありふれた語は折り畳む"""
@@ -1263,31 +1518,262 @@ def _has_word(text, word):
 def purge_word(word):
     """会話と日記から、その単語を含む行を消す(元ファイルはバックアップ)。消した行数を返す"""
     n = 0
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    for path in ALL_DB:
+    with _MEMORY_LOCK:
+        for path in ALL_DB:
+            if not path.exists():
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            keep = []
+            for line in lines:
+                try:
+                    hit = _has_word(json.loads(line).get("text", ""), word)
+                except json.JSONDecodeError:
+                    hit = False
+                if not hit:
+                    keep.append(line)
+            if len(keep) != len(lines):
+                # renameだと(a)同じ秒に2語消すとbak名が衝突[WinError 183]
+                # (b)HTTPスレッドが/wordsで読んでいると失敗[WinError 32]して、消したつもりが消えない
+                shutil.copy2(path, _backup_path(path, "purge"))
+                path.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
+                n += len(lines) - len(keep)
+        manual = _manual_words()
+        kept_manual = [w for w in manual if not _has_word(w, word)]
+        if len(kept_manual) != len(manual):
+            _save_manual_words(kept_manual)
+            n += len(manual) - len(kept_manual)
+        videos = _video_titles()
+        kept_videos = [(k, v) for k, v in videos if not (_has_word(k, word) or _has_word(v, word))]
+        if len(kept_videos) != len(videos):
+            if _VIDEOS_PATH.exists():
+                shutil.copy2(_VIDEOS_PATH, _backup_path(_VIDEOS_PATH, "purge"))
+            _save_video_titles(kept_videos)
+            n += len(videos) - len(kept_videos)
+        _WORDS_CACHE["key"] = None   # 4KB単位のキャッシュのままだと、消してもチップが残って見える
+    return n
+
+def _memory_family(src):
+    if src.startswith("conversation"):
+        return "conversation"
+    if src.startswith("diary"):
+        return "diary"
+    if src in ("manual", "knowledge"):
+        return "notes"
+    if src == "video":
+        return "video"
+    return src
+
+def _memory_kind_sources(kind):
+    kind = (kind or "all").strip().lower()
+    if kind in ("", "all"):
+        return ("conversation", "conversation_en", "diary", "diary_en", "manual", "knowledge", "video")
+    if kind == "conversation":
+        return ("conversation", "conversation_en")
+    if kind == "diary":
+        return ("diary", "diary_en")
+    if kind == "notes":
+        return ("manual", "knowledge")
+    if kind == "video":
+        return ("video",)
+    return ()
+
+def _memory_label(kind):
+    return {
+        "all": "全部",
+        "conversation": "会話",
+        "diary": "日記",
+        "notes": "メモ/ナレッジ",
+        "video": "動画",
+    }.get((kind or "all").strip().lower(), "全部")
+
+def _clear_text_file(path):
+    if path.exists():
+        shutil.copy2(path, _backup_path(path, "clear"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+
+def _write_json_backup(path, data):
+    if path.exists():
+        shutil.copy2(path, _backup_path(path, "clear"))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+def clear_memory(kind="all"):
+    kind = (kind or "all").strip().lower()
+    if kind not in ("all", "conversation", "diary", "notes", "video"):
+        return 0
+    n = 0
+    with _MEMORY_LOCK:
+        if kind in ("all", "conversation"):
+            for src in ("conversation", "conversation_en"):
+                path = _memory_sources()[src][0]
+                if path.exists() and path.read_text(encoding="utf-8").strip():
+                    n += len(path.read_text(encoding="utf-8").splitlines())
+                _clear_text_file(path)
+        if kind in ("all", "diary"):
+            for src in ("diary", "diary_en"):
+                path = _memory_sources()[src][0]
+                if path.exists() and path.read_text(encoding="utf-8").strip():
+                    n += len(path.read_text(encoding="utf-8").splitlines())
+                _clear_text_file(path)
+        if kind in ("all", "notes"):
+            manual = _manual_words()
+            n += len(manual)
+            _write_json_backup(_MANUAL_PATH, [])
+            cfg = dict(CFG)
+            if cfg.get("knowledge"):
+                n += len(_knowledge_lines())
+            cfg["knowledge"] = ""
+            if CONFIG.exists():
+                shutil.copy2(CONFIG, _backup_path(CONFIG, "clear"))
+            CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            load_cfg()
+        if kind in ("all", "video"):
+            items = _video_titles()
+            n += len(items)
+            _write_json_backup(_VIDEOS_PATH, {})
+        _WORDS_CACHE["key"] = None
+    return n
+
+def _memory_records(q="", limit=600, kind="all"):
+    """設定UIに出す、LLMへ入りうる長期/短期記憶の一覧。q指定時は全件検索。"""
+    q = (q or "").strip()
+    qh = _kanji_to_hira(q.lower()) if q else ""
+    kind = (kind or "all").strip().lower()
+    want_sources = set(_memory_kind_sources(kind))
+    suffix = db_suffix()
+    cur_conv = "conversation_en" if suffix == "_en" else "conversation"
+    cur_diary = "diary_en" if suffix == "_en" else "diary"
+    records, total = [], 0
+    for src, (path, label) in _memory_sources().items():
+        if src not in want_sources:
+            continue
         if not path.exists():
             continue
-        lines = path.read_text(encoding="utf-8").splitlines()
-        keep = []
-        for line in lines:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        history_from = max(0, len(lines) - HISTORY_TURNS * 2)
+        diary_from = max(0, len(lines) - 3)
+        scan = enumerate(lines) if q else enumerate(lines[-limit:], max(0, len(lines) - limit))
+        for idx, line in scan:
+            if not line.strip():
+                continue
             try:
-                hit = _has_word(json.loads(line).get("text", ""), word)
+                j = json.loads(line)
             except json.JSONDecodeError:
-                hit = False
-            if not hit:
-                keep.append(line)
-        if len(keep) != len(lines):
-            # renameだと(a)同じ秒に2語消すとbak名が衝突[WinError 183]
-            # (b)HTTPスレッドが/wordsで読んでいると失敗[WinError 32]して、消したつもりが消えない
-            bak = path.with_name(f"{path.stem}.{stamp}.purge.bak")
-            i = 0
-            while bak.exists():
-                i += 1
-                bak = path.with_name(f"{path.stem}.{stamp}-{i}.purge.bak")
-            shutil.copy2(path, bak)
-            path.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
-            n += len(lines) - len(keep)
-    _WORDS_CACHE["key"] = None   # 4KB単位のキャッシュのままだと、消してもチップが残って見える
+                continue
+            text = str(j.get("text", ""))
+            hay = (text + " " + str(j.get("date", "")) + " " + str(j.get("role", ""))).lower()
+            if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+                continue
+            tags = []
+            if src == cur_conv and idx >= history_from:
+                tags.append("直近会話")
+            if src == cur_conv and idx >= max(0, len(lines) - 600) and text.startswith("["):
+                tags.append("フレンド発言")
+            if src == cur_diary and idx >= diary_from:
+                tags.append("最近日記")
+            total += 1
+            records.append({
+                "id": _line_id(src, idx, line),
+                "source": label,
+                "kind": _memory_family(src),
+                "ts": float(j.get("ts") or 0),
+                "date": str(j.get("date") or ""),
+                "role": str(j.get("role") or ("diary" if src.startswith("diary") else "")),
+                "text": text,
+                "tags": tags,
+            })
+    if "manual" in want_sources:
+        for src, label, lines in (("manual", "手動メモ", _manual_words()),
+                                  ("knowledge", "ナレッジ", _knowledge_lines())):
+            if src not in want_sources:
+                continue
+            for idx, text in enumerate(lines):
+                hay = text.lower()
+                if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+                    continue
+                total += 1
+                records.append({
+                    "id": _line_id(src, idx, text),
+                    "source": label,
+                    "kind": _memory_family(src),
+                    "ts": 0,
+                    "date": "",
+                    "role": "memo",
+                    "text": text,
+                    "tags": ["手動メモ"] if src == "manual" else ["ナレッジ"],
+                })
+    if "video" in want_sources:
+        for idx, (ytid, title) in enumerate(_video_titles()):
+            hay = (ytid + " " + title).lower()
+            if q and q.lower() not in hay and qh not in _kanji_to_hira(hay):
+                continue
+            total += 1
+            records.append({
+                "id": _line_id("video", idx, ytid + "\t" + title),
+                "source": "動画タイトル",
+                "kind": "video",
+                "ts": 0,
+                "date": "",
+                "role": ytid,
+                "text": title,
+                "tags": ["動画"],
+            })
+    records.sort(key=lambda r: (r["date"], r["ts"]), reverse=True)
+    if q:
+        records = records[:1000]
+    return {"query": q, "total": total, "records": records}
+
+def purge_word(word, kind="all"):
+    """会話と日記から、その単語を含む行を消す(元ファイルはバックアップ)。消した行数を返す"""
+    kind = (kind or "all").strip().lower()
+    if kind not in ("all", "conversation", "diary", "notes", "video"):
+        kind = "all"
+    sources = set(_memory_kind_sources(kind))
+    n = 0
+    with _MEMORY_LOCK:
+        for src, (path, _) in _memory_sources().items():
+            if src not in sources or not path.exists():
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            keep = []
+            for line in lines:
+                try:
+                    hit = _has_word(json.loads(line).get("text", ""), word)
+                except json.JSONDecodeError:
+                    hit = False
+                if not hit:
+                    keep.append(line)
+            if len(keep) != len(lines):
+                shutil.copy2(path, _backup_path(path, "purge"))
+                path.write_text("".join(l + "\n" for l in keep), encoding="utf-8")
+                n += len(lines) - len(keep)
+        if kind in ("all", "notes"):
+            manual = _manual_words()
+            kept_manual = [w for w in manual if not _has_word(w, word)]
+            if len(kept_manual) != len(manual):
+                _write_json_backup(_MANUAL_PATH, kept_manual)
+                n += len(manual) - len(kept_manual)
+            lines = _knowledge_lines()
+            kept_lines = [line for line in lines if not _has_word(line, word)]
+            if len(kept_lines) != len(lines):
+                cfg = dict(CFG)
+                cfg["knowledge"] = "\n".join(kept_lines)
+                if CONFIG.exists():
+                    shutil.copy2(CONFIG, _backup_path(CONFIG, "purge"))
+                CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+                load_cfg()
+                n += len(lines) - len(kept_lines)
+        if kind in ("all", "video"):
+            videos = _video_titles()
+            kept_videos = [(k, v) for k, v in videos if not (_has_word(k, word) or _has_word(v, word))]
+            if len(kept_videos) != len(videos):
+                _write_json_backup(_VIDEOS_PATH, {k: v for k, v in kept_videos})
+                n += len(videos) - len(kept_videos)
+        _WORDS_CACHE["key"] = None
     return n
 
 # ---------------------------------------------------------------- Ollama
@@ -1447,600 +1933,9 @@ class FileTail:
 import html as _html
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
-_UI_HTML = """<!doctype html><html lang="ja"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>__NAME__のせってい</title>
-<style>
-:root{--bg:#12121b;--card:#1c1c2a;--panel:#141420;--field:#262638;--line:#30304a;
- --tx:#ececf4;--dim:#a5a5bd;--faint:#787894;--accent:#8b6cff;--accent2:#ff8ac2;
- --ok:#8fe38f;--me:#7fb3ff;--mu:#c9a6ff;--mub:#e6d9ff;--err:#e0596e;--danger:#b03a4a;
- --r:14px;--rs:8px}
-*{box-sizing:border-box}
-body{font-family:"Segoe UI","Hiragino Kaku Gothic ProN","Noto Sans JP",sans-serif;
- margin:0;background:var(--bg);color:var(--tx);line-height:1.55}
-header{position:sticky;top:0;z-index:20;background:rgba(18,18,27,.9);
- backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
-.hwrap{max-width:1100px;margin:0 auto;padding:10px 20px;display:flex;flex-wrap:wrap;
- gap:4px 24px;align-items:baseline}
-h1{font-size:1.05em;margin:0;white-space:nowrap}
-#stat{flex:1;min-width:260px}
-small{color:var(--dim)}
-main{max-width:1100px;margin:0 auto;padding:16px 20px 110px}
-.grid{columns:2 340px;column-gap:14px}
-.grid>.card{break-inside:avoid;margin-bottom:14px}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px}
-.card.wide{column-span:all}
-.card h2{font-size:.95em;margin:0;letter-spacing:.04em}
-.card .desc{margin:2px 0 8px;font-size:.8em;color:var(--faint)}
-.field{margin:12px 0}
-.field .lr{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.field>label,.field .lr label{display:block;font-size:.9em;margin-bottom:2px}
-.field small{display:block;color:var(--faint);font-size:.78em;margin-top:3px}
-output{font-variant-numeric:tabular-nums;background:var(--field);border:1px solid var(--line);
- border-radius:20px;padding:1px 10px;font-size:.82em;color:var(--mub);white-space:nowrap}
-input[type=text],input[type=number],textarea,select{background:var(--field);color:var(--tx);
- border:1px solid var(--line);border-radius:var(--rs);padding:7px 10px;font:inherit;font-size:.9em}
-input[type=text],textarea,select{width:100%}
-input[type=number]{width:6.5em;text-align:right}
-textarea{resize:vertical;min-height:2.4em}
-input:focus-visible,textarea:focus-visible,select:focus-visible,button:focus-visible{
- outline:2px solid var(--accent);outline-offset:1px}
-input[type=range]{width:100%;accent-color:var(--accent);margin:6px 0 0;padding:0}
-.check{display:flex;gap:8px;align-items:baseline;margin:12px 0;font-size:.9em}
-.check input{accent-color:var(--accent)}
-button{padding:8px 22px;border-radius:10px;border:0;background:var(--accent);color:#fff;
- font:inherit;font-size:.92em;cursor:pointer}
-button:hover{filter:brightness(1.12)}
-.ghost{background:var(--field)!important;border:1px solid var(--line)!important;
- color:var(--dim)!important;font-size:.85em!important;padding:6px 14px!important}
-.danger{background:var(--danger)!important}
-.savebar{position:fixed;left:0;right:0;bottom:0;z-index:30;background:rgba(18,18,27,.92);
- backdrop-filter:blur(10px);border-top:1px solid var(--line);
- padding:10px 20px calc(10px + env(safe-area-inset-bottom));display:flex;justify-content:center;
- gap:14px;align-items:center;transform:translateY(110%);transition:transform .18s}
-.savebar.on{transform:none}
-#toast{position:fixed;left:50%;bottom:76px;transform:translate(-50%,20px);z-index:40;
- background:#2a2a40;border:1px solid var(--accent);border-radius:10px;padding:9px 18px;
- font-size:.9em;opacity:0;pointer-events:none;transition:.25s;max-width:90vw}
-#toast.on{opacity:1;transform:translate(-50%,0)}
-#toast.err{border-color:var(--err);color:#ffd7dd}
-.gauge{height:8px;background:var(--field);border-radius:4px;overflow:hidden;margin:4px 0;max-width:340px}
-.gauge i{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))}
-#log{height:340px;overflow-y:auto;background:var(--panel);border:1px solid var(--line);
- border-radius:var(--rs);padding:10px;font-size:.9em}
-.row{display:flex;gap:10px;margin:4px 0;align-items:baseline}
-.row .t{color:var(--faint);font-size:.78em;white-space:nowrap}
-.row .w{width:5em;flex-shrink:0;text-align:right;font-weight:600;font-size:.88em}
-.row .b{white-space:pre-wrap;word-break:break-all}
-.me .w{color:var(--me)} .fr .w{color:var(--ok)} .mu .w{color:var(--mu)} .mu .b{color:var(--mub)}
-.frow{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.frow:last-child{border-bottom:0}
-.frow.here{background:#20203a;border-left:3px solid var(--ok)}
-.fname{flex:1;min-width:9em;word-break:break-all}
-.fname small{color:var(--faint)}
-.fmeta{color:var(--dim);font-size:.8em;white-space:nowrap}
-.fnick{width:7.5em;background:var(--field);color:var(--tx);border:1px solid var(--line);
- border-radius:var(--rs);padding:4px 8px;font:inherit;font-size:.85em}
-.badge{font-size:.7em;background:#2c4a2c;color:#cfeccf;border-radius:20px;padding:1px 8px;margin-left:4px}
-.badge.m{background:#4a2c38;color:#f3cfdd}
-.fgl{font-size:.82em;color:var(--dim);white-space:nowrap;display:flex;gap:4px;align-items:center}
-#friends,#look,#voices{background:var(--panel);border:1px solid var(--line);
- border-radius:var(--rs);max-height:400px;overflow-y:auto}
-#voices{max-height:320px}
-#fq{flex:1;max-width:16em;background:var(--field);color:var(--tx);border:1px solid var(--line);
- border-radius:var(--rs);padding:6px 10px;font:inherit;font-size:.9em}
-.chip{display:inline-block;background:var(--field);border:1px solid var(--line);border-radius:20px;
- padding:3px 12px;margin:3px;cursor:pointer;font-size:.88em}
-.chip:hover{background:#3a3a58;border-color:var(--accent)}
-.chip small{color:var(--faint);margin-left:4px}
-#words{background:var(--panel);border:1px solid var(--line);border-radius:var(--rs);
- padding:8px;max-height:220px;overflow-y:auto}
-.wgroup{margin:6px 0 2px;color:var(--dim)}
-summary{cursor:pointer}
-#guide ol{margin:8px 0 2px;padding-left:1.5em;font-size:.9em}
-#guide li{margin:5px 0}
-code{background:var(--field);border:1px solid var(--line);border-radius:4px;padding:0 6px;font-size:.92em}
-.tools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:8px 0}
-.tools form{display:flex;gap:6px;margin:0}
-a{color:#9f8cff}
-.tabs{display:flex;gap:8px;margin:0 0 14px}
-.tab{background:var(--field);color:var(--dim);border:1px solid var(--line);padding:7px 28px;border-radius:20px;font-size:.9em}
-.tab.on{background:var(--accent);color:#fff;border-color:var(--accent)}
-body.tab-s .ta,body.tab-s .tj{display:none}
-body.tab-a .ts,body.tab-a .tj{display:none}
-body.tab-j .ts,body.tab-j .ta{display:none}
-.pole{font-size:.82em;color:var(--dim)}
-.card h3{font-size:.88em;margin:16px 0 2px;color:var(--dim);letter-spacing:.04em;
- border-top:1px solid var(--line);padding-top:12px}
-@media (max-width:720px){.card{padding:13px 14px} main{padding:12px 12px 110px} .hwrap{padding:8px 12px}}
-</style></head><body>
-<header><div class="hwrap">
-<h1>🍙 <span id="ttl">__NAME__</span>のせってい</h1>
-<div id="stat"><small>よみこみ中...</small></div>
-</div></header>
-<main>
-<nav class="tabs">
-<button type="button" class="tab" data-tab="s">シンプル</button>
-<button type="button" class="tab" data-tab="j">じんかく</button>
-<button type="button" class="tab" data-tab="a">アドバンスド</button>
-</nav>
-<form id="cfg" method="post" action="/save">
-<input type="hidden" name="cfg_mtime" value="__MT__">
-<div class="grid">
-
-<section class="card wide ts" id="guide"><details id="guidebox">
-<summary><b>🔰 はじめてガイド</b> <small>(クリックでひらく/とじる。とじた状態はおぼえます)</small></summary>
-<ol>
-<li><b>なまえ</b>カードで、ペットのなまえ(かな/ローマ字)と あなたのVRChat表示名を入れて「ほぞん」</li>
-<li><b>あたま(LLM)</b>カードで、いま入っているモデルを選ぶ。⚠が付くものはこのPCには大きすぎます。
-小さいモデルはコマンドで <code>ollama pull qwen3:4b</code> などを実行すると増えます</li>
-<li>せいかく・口調を変えたいときは<b>じんかく</b>タブへ(どこを直せば何が変わるかの説明もそこにあります)</li>
-<li>設定のモデルが入っていないときは、手持ちのモデルを自動で代用します(上の状態表示に⚠が出ます)</li>
-<li>VRChatに入って名前を呼ぶ → 頭上の文字盤に返事が出たら成功。
-声を拾わないときは<b>耳(リスナー)</b>の音量ゲートを下げてみてください</li>
-</ol>
-</details></section>
-
-<section class="card ts"><h2>なまえ</h2>
-<p class="desc">ペットとあなたのなまえ。よびかけ判定とおしゃべりに使います</p>
-<div class="field"><label>ペットのなまえ(かな)</label>
-<input type="text" name="pet_name" value="__PN__" maxlength="16">
-<small>ひらがなで。この名前で呼ばれたら率に関係なく必ず返事します(聞き間違いもある程度吸収)</small></div>
-<div class="field"><label>ペットのなまえ(ローマ字)</label>
-<input type="text" name="pet_name_en" value="__PNE__" maxlength="32">
-<small>英語で呼びかけられたときの判定と、英語モードの一人称に使います</small></div>
-<div class="field"><label>飼い主のなまえ</label>
-<input type="text" name="owner_name" value="__ON__" maxlength="32">
-<small>あなたのVRChat表示名。だれが飼い主かをペットに教えます</small></div>
-</section>
-
-<section class="card ts"><h2>おしゃべり</h2>
-<p class="desc">どのくらいの頻度・長さでしゃべるか</p>
-<div class="field"><div class="lr"><label>あなたへの反応率</label><output>__R__%</output></div>
-<input type="range" name="reply_chance" min="0" max="100" step="5" value="__R__">
-<small>名前を呼ばれたときは率に関係なく必ず返事します</small></div>
-<div class="field"><div class="lr"><label>フレンドへの割り込み率</label><output>__F__%</output></div>
-<input type="range" name="friend_reply_chance" min="0" max="100" step="5" value="__F__"></div>
-<div class="field"><div class="lr"><label>クールダウン(秒)</label>
-<input type="number" name="cooldown" min="0" max="120" step="1" value="__CD__"></div>
-<small>名前なし反応の最短間隔</small></div>
-<div class="field"><div class="lr"><label>聞く間(秒)</label>
-<input type="number" name="listen_window" min="0" max="30" step="0.5" value="__LW__"></div>
-<small>まず相槌だけ返し、相手が黙ってから本返事。0=すぐ返す</small></div>
-<div class="field"><div class="lr"><label>ひとりごとの間隔(秒)</label>
-<input type="number" name="idle_seconds" min="0" max="600" step="5" value="__ID__"></div>
-<small>静かなときに自発的にしゃべる。0=しない</small></div>
-<div class="field"><div class="lr"><label>フレンドのかいわ記憶(件)</label>
-<input type="number" name="friend_context" min="0" max="50" step="1" value="__FC__"></div>
-<small>発言のまえに、ちかくのフレンドのさいきんの発言を読みこむ数。0=しない</small></div>
-<div class="field"><div class="lr"><label>返事の長さ上限(文字)</label>
-<input type="number" name="max_reply" min="10" max="128" step="1" value="__MR__"></div>
-<small>盤面1ページの文字数。上限は盤面セル数まで</small></div>
-<div class="field"><div class="lr"><label>盤面セル数</label>
-<select name="board_cells"><option value="64"__B64__>64 (32×2行・標準)</option>
-<option value="128"__B128__>128 (32×4行・改造アバター)</option></select></div>
-<small>128はPointer9-16改造+再アップロード済みアバター専用。無改造だと後半が消えます</small></div>
-<label class="check"><input type="checkbox" name="kanji_mode"__KJ__> かんじモード(改造シェーダーで再アップしたアバター専用)</label>
-<label class="check"><input type="checkbox" name="osc_proxy"__PX__> VRCPetちゅうけい(要VRChat起動オプション --osc=9002:127.0.0.1:9001・要さいきどう)</label>
-<div class="field"><div class="lr"><label>文字送りの速さ(秒/文字)</label>
-<input type="number" name="typing_speed" min="0" max="0.5" step="0.01" value="__TS__"></div>
-<small>1文字ずつタイプするように出す。0=一括で出す</small></div>
-<div class="field"><div class="lr"><label>表示位置・日本語</label>
-<input type="number" name="center_jp" min="0" max="31" step="1" value="__CJ__"></div>
-<small>0=ひだり寄せ 16=まんなか 31=みぎ寄せ。頭上に合うよう微調整</small></div>
-<div class="field"><div class="lr"><label>表示位置・英語</label>
-<input type="number" name="center_en" min="0" max="31" step="1" value="__CE__"></div>
-<small>フォントの見た目幅が違うので別に調整できます</small></div>
-</section>
-
-<section class="card ts"><h2>あたま(LLM)</h2>
-<p class="desc">かんがえるモデルとことばの切り替え</p>
-<div class="field"><label>モード</label>
-<select name="mode">
-<option value="auto"__A0__>じどう（在室のなかまの界隈で日本語/英語を自動切替）</option>
-<option value="jp"__A1__>日本語モード（認識も返事も日本語に固定）</option>
-<option value="en"__A2__>英語モード（認識も返事も英語に固定・英語モデルに切替）</option>
-</select>
-<small>モデル・口調・音声認識の言語がまとめて切り替わります</small></div>
-<div class="field"><label>モデル</label>
-<select name="model">__MODELS__</select>
-<small>日本語/じどう用。VRAMからあふれる大きさだとCPU分担になり遅くなる</small></div>
-<div class="field"><label>英語モードのモデル</label>
-<select name="model_en">__MODELSE__</select>
-<small>英語が得意なものを（ABEJA等の日本語特化は英語が弱い）</small></div>
-<label class="check"><input type="checkbox" name="think"__TH__> かんがえてからはなす(賢くなるが返事がおそくなる・対応モデルのみ)</label>
-</section>
-
-<section class="card wide tj"><h2>じんかく</h2>
-<p class="desc">上から順につながって1本のプロンプトになります: せいかく → はなしかた → こだわり →
-じゆうテキスト(人格) → 自動のきほんルール(ナレーション・話者タグ禁止・返事の長さなど。編集不要) →
-れいぶん → まもりのルール → そうていもんどう → じどうで足されるぶん(なつき度・ばしょ・にっき等)。
-「あいづち」だけはプロンプトを通らず、そのまま盤面に出ます</p>
-<div class="field"><label>テンプレからはじめる</label>
-<div class="tools" id="presets"></div>
-<small>おすと、スライダー・こだわり・人格・れいぶんに一式が入ります。「ほぞん」を押すまで確定しません(やめるときはページを読み込み直す)</small></div>
-<h3>せいかく</h3>
-<p class="desc">はしに寄せるほど強い指示になります。まんなかはなにも足しません</p>
-__TRAITSC__
-<div class="field"><div class="lr"><label>せいかくの効きぐあい</label>
-<select name="trait_weight" style="width:auto">__TWOPTS__</select></div>
-<small>よわめ=うっすら傾向 / ふつう / つよめ=ほかの指示より優先</small></div>
-<h3>はなしかた</h3>
-__TRAITST__
-<h3>こだわり</h3>
-__RTOGGLES__
-<h3>じゆうテキスト(人格)</h3>
-<div class="field"><label>人格</label>
-<textarea name="persona" rows="4">__P__</textarea>
-<small>どんな子か・口調・話題のクセを自由に(うんちくbotでもキャラでも)。短い一言・ナレーション禁止などの基本ルールは自動で付きます(漢字で書いても盤面はひらがなに変換)。{name}と書くとペットの名前が入ります。空にして保存すると初期文に戻ります</small></div>
-<div class="field"><label>英語モードの人格</label>
-<textarea name="persona_en" rows="3">__PE__</textarea>
-<small>英語界隈で使う人格(英語で書く)</small></div>
-<div class="field"><div class="lr"><label>人格の効きぐあい</label>
-<select name="persona_weight" style="width:auto">__PWOPTS__</select></div>
-<small>スライダーとじゆうテキストがけんかしたときの、テキスト側のつよさ</small></div>
-<h3>れいぶん</h3>
-<div class="field"><label>れいぶん(にほんご)</label>
-<textarea name="examples" rows="2">__EX__</textarea>
-<small>「きかれたこと」→「返し」の強いお手本。キャラの口調はここが一番効きます。{name}=ペットの名前。空にして保存すると初期文に戻ります</small></div>
-<div class="field"><label>れいぶん(えいご)</label>
-<textarea name="examples_en" rows="2">__EXE__</textarea></div>
-</section>
-
-<section class="card tj"><h2>まもりのルール</h2>
-<p class="desc">個人情報・AI暴きへの返しかたのルール文。空にして保存すると初期文に戻ります</p>
-<div class="field"><label>まもりのルール(にほんご)</label>
-<textarea name="rules" rows="7">__RU__</textarea>
-<small>{fake}=うそプロフィールの指示文({fake}を消すと、うそプロフィールを使わなくなります)</small></div>
-<div class="field"><label>まもりのルール(えいご)</label>
-<textarea name="rules_en" rows="6">__RUE__</textarea>
-<small>{fake}=うそプロフィール(英語)の指示文 に置き換わります</small></div>
-</section>
-
-<section class="card tj"><h2>あいづち</h2>
-<p class="desc">LLMを通さず即出す短い反応。、区切りでならべます(空にして保存すると初期リストに戻る)</p>
-<div class="field"><label>あいづち(にほんご)</label>
-<textarea name="aizuchi" rows="2">__AZ__</textarea></div>
-<div class="field"><label>あいづち(えいご)</label>
-<textarea name="aizuchi_en" rows="2">__AZE__</textarea>
-<small>盤面フォントに無い文字は消えるので、出ない言葉があったら文字を変えてみてください</small></div>
-</section>
-
-<section class="card tj"><h2>まもり</h2>
-<p class="desc">危険質問あそび用のデータ。ルール文の{fake}などから参照されます</p>
-<div class="field"><label>うそプロフィール</label>
-<textarea name="fake_profile" rows="3">__FP__</textarea>
-<small>個人情報を聞かれたとき本当っぽく言い切る、うその本名・住所・IPなど。IPは 203.0.113.× か 198.51.100.× にすると本物っぽいのに誰にも当たらない予約アドレスで安全</small></div>
-<div class="field"><label>うそプロフィール(えいご)</label>
-<textarea name="fake_profile_en" rows="2">__FPE__</textarea>
-<small>英語界隈用(空なら上のを流用)。IPなどの値は日本語側とそろえておくと、言語を変えて聞き直されてもブレない</small></div>
-<div class="field"><label>いえないことば</label>
-<textarea name="ng_words" rows="2">__NG__</textarea>
-<small>本名・住所など。盤面に出る直前に「ぴ-」へ置換されます(、区切り。漢字登録でもひらがな読みに当たります)</small></div>
-<div class="field"><label>そうていもんどう</label>
-<textarea name="qa_notes" rows="4">__QA__</textarea>
-<small>よく聞かれる質問→返しかたの手本を1行ずつ(例: なんさい？→ひみつだよ)。まる写しせず毎回くずして使います</small></div>
-</section>
-
-<section class="card ta"><h2>そだち</h2>
-<p class="desc">なつき方と、なかまの覚え方</p>
-<label class="check"><input type="checkbox" name="greet_friends"__GF__> なかまが来たら気づいて一言いう</label>
-<div class="field"><div class="lr"><label>ちょっかい率</label><output>__PK__%</output></div>
-<input type="range" name="poke_chance" min="0" max="100" step="5" value="__PK__">
-<small>ひとりごとの代わりに、いまいるなかまに話しかける</small></div>
-<div class="field"><div class="lr"><label>なつきやすさ(倍率)</label>
-<input type="number" name="bond_gain" min="0" max="5" step="0.1" value="__BG__"></div>
-<small>会話でなつき度が上がる速さ。1.0が標準</small></div>
-<div class="field"><div class="lr"><label>わすれる半減期(日)</label>
-<input type="number" name="bond_halflife_days" min="0.5" max="60" step="0.1" value="__BH__"></div>
-<small>話さないと、なつき度がこの日数で半分に薄れる</small></div>
-<div class="field"><div class="lr"><label>「よくあうこ」になる日数</label>
-<input type="number" name="tier_regular" min="2" max="100" step="1" value="__TR__"></div>
-<small>会った日数がこれ以上で常連あつかい</small></div>
-<div class="field"><div class="lr"><label>「ひさしぶり」判定(日)</label>
-<input type="number" name="absence_days" min="1" max="365" step="1" value="__AD__"></div>
-<small>これ以上あいだが空いた人には ひさしぶり反応</small></div>
-<div class="field"><div class="lr"><label>フレンド外を覚える日数</label>
-<input type="number" name="auto_adopt_days" min="0" max="100" step="1" value="__AA__"></div>
-<small>フレンドじゃなくても、会った日数がこれ以上なら自動でなかまにする。0=しない</small></div>
-</section>
-
-<section class="card ta"><h2>せかい</h2>
-<p class="desc">ばしょ・きょく・時間への気づき</p>
-<div class="field"><div class="lr"><label>ばしょのひとこと率</label><output>__WC__%</output></div>
-<input type="range" name="world_comment_chance" min="0" max="100" step="5" value="__WC__">
-<small>ワールドがかわったとき気づいて一言</small></div>
-<div class="field"><div class="lr"><label>きょくのひとこと率</label><output>__SC__%</output></div>
-<input type="range" name="song_comment_chance" min="0" max="100" step="5" value="__SC__">
-<small>ながれた動画・曲に一言</small></div>
-<div class="field"><div class="lr"><label>よふかし気づかい(時間)</label>
-<input type="number" name="care_hours" min="0" max="24" step="0.5" value="__CH__"></div>
-<small>きょうのプレイがこの時間をこえたら心配する。0=しない</small></div>
-<div class="field"><div class="lr"><label>気づかいはじめる時刻</label>
-<input type="number" name="care_hour" min="0" max="23" step="1" value="__CHH__"></div>
-<small>この時(24h表記)からあさ6時まで言う</small></div>
-<label class="check"><input type="checkbox" name="diary"__DI__> まいにち日記をかく(ペットの長期記憶になる)</label>
-</section>
-
-<section class="card ta"><h2>耳(リスナー)</h2>
-<p class="desc">こえの拾い方と聞き取り</p>
-<div class="field"><div class="lr"><label>音量ゲート</label>
-<input type="number" name="rms_gate" min="50" max="5000" step="50" value="__G__"></div>
-<small>下げるほど拾いやすい(拾いすぎ注意)。反映まで最大15秒</small></div>
-<div class="field"><div class="lr"><label>無音判定(秒)</label>
-<input type="number" name="silence_end" min="0.2" max="3" step="0.05" value="__SE__"></div>
-<small>短いほど反応が速いが文を切りやすい</small></div>
-<div class="field"><label>認識ヒント</label>
-<textarea name="stt_hint" rows="2">__H__</textarea>
-<small>よく言う固有名詞を文に入れると聞き取りが安定(例: たいやき)。{name}と書くとペットの名前が入ります</small></div>
-<div class="field"><label>認識ヒント(英語モード用)</label>
-<textarea name="stt_hint_en" rows="2">__HE__</textarea></div>
-<div class="field"><div class="lr"><label>こえ判定のきびしさ</label>
-<input type="number" name="voice_threshold" min="0.3" max="0.9" step="0.05" value="__VT__"></div>
-<small>上げると他人空似が減るが、本人も名無しになりやすい。反映まで最大15秒</small></div>
-</section>
-
-</div>
-</form>
-
-<div class="grid" style="margin-top:14px">
-
-<section class="card wide ta"><h2>こえおぼえ</h2>
-<p class="desc">だれの声か教えると、つぎから名前つきで聞こえる</p>
-<div id="vprof" style="margin-bottom:4px"></div>
-<div id="voices">よみこみ中...</div>
-</section>
-
-<section class="card wide ta"><h2>なかま</h2>
-<div class="tools">
-<input id="fq" placeholder="なまえで検索" oninput="drawF()">
-<button type="button" class="ghost" onclick="LIM+=20;drawF()">もっと見る</button>
-<button type="button" class="ghost" onclick="lookF()">フレンド外から探して登録</button>
-</div>
-<div id="friends">よみこみ中...</div>
-<div id="look"></div>
-</section>
-
-<section class="card wide ta"><h2>おぼえてることば</h2>
-<p class="desc">会話と日記によく出る単語。ありふれたことばはたたんであります。クリックすると、その単語を含む会話と日記をわすれます</p>
-<div id="words">よみこみ中...</div>
-</section>
-
-<section class="card wide ts"><h2>会話ログ</h2>
-<div class="tools">
-<form id="purgeform">
-<input name="word" class="fnick" style="width:11em" placeholder="わすれたい単語">
-<button class="danger">単語けし</button>
-</form>
-<form id="resetform">
-<button class="danger">会話リセット</button>
-</form>
-</div>
-<div id="log">よみこみ中...</div>
-</section>
-
-</div>
-</main>
-
-<div class="savebar" id="savebar">
-<small>設定がへんこうされています</small>
-<button form="cfg">ほぞん（数秒で反映・再起動不要）</button>
-</div>
-<div id="toast"></div>
-<script>
-const $ = id => document.getElementById(id);
-function toast(msg, err){
-  const t = $('toast');
-  t.textContent = msg; t.className = err ? 'on err' : 'on';
-  clearTimeout(t._h); t._h = setTimeout(()=>{ t.className=''; }, 3500);
-}
-async function upd(){
-  try{
-    $('stat').innerHTML = await (await fetch('/status')).text();
-  }catch(e){}
-  try{
-    const r = await fetch('/log');
-    const el = $('log');
-    const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
-    el.innerHTML = await r.text();
-    if(atBottom) el.scrollTop = el.scrollHeight;
-  }catch(e){}
-}
-setInterval(upd, 3000); upd();
-
-// ---- はじめてガイド(とじたのをおぼえる) ----
-const gb = $('guidebox');
-gb.open = localStorage.getItem('muchio_guide') !== 'closed';
-gb.addEventListener('toggle', ()=>localStorage.setItem('muchio_guide', gb.open ? 'open' : 'closed'));
-
-// ---- シンプル/じんかく/アドバンスド タブ(選んだほうをおぼえる) ----
-function setTab(t){
-  document.body.className = 'tab-' + t;
-  document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('on', b.dataset.tab===t));
-  localStorage.setItem('muchio_tab', t);
-}
-document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click', ()=>setTab(b.dataset.tab)));
-const t0 = localStorage.getItem('muchio_tab');
-setTab(t0 === 'a' || t0 === 'j' ? t0 : 's');
-
-// ---- じんかくテンプレ: スライダー・こだわり・人格・れいぶんに一式を流し込む(保存は「ほぞん」で) ----
-const PRESETS = __PRESETS__;
-{
-  const box = document.getElementById('presets'), f = document.getElementById('cfg');
-  for(const k of Object.keys(PRESETS)){
-    const b = document.createElement('button');
-    b.type = 'button'; b.className = 'tab'; b.textContent = k;
-    b.addEventListener('click', ()=>{
-      const p = PRESETS[k];
-      f.persona.value = p.persona; f.persona_en.value = p.persona_en;
-      f.examples.value = p.examples; f.examples_en.value = p.examples_en;
-      f.querySelectorAll('input[type=range][name^=trait_]').forEach(s=>{
-        s.value = s.name in p.traits ? p.traits[s.name] : 50;   // ||50だと値0のプリセットが消える
-        const o = s.closest('.field').querySelector('output');
-        if(o) o.textContent = s.value + '%';
-      });
-      f.querySelectorAll('input[type=checkbox][name^=rule_]').forEach(c=>{ c.checked = !!p.checks[c.name]; });
-      $('savebar').classList.add('on');
-      toast('テンプレ「' + k + '」を入れました。「ほぞん」を押すと反映されます');
-    });
-    box.appendChild(b);
-  }
-}
-
-// ---- 設定の保存(fetch。リロードなしで連続保存できる) ----
-const cfg = $('cfg');
-cfg.addEventListener('input', e=>{
-  if(e.target.type === 'range'){
-    const o = e.target.closest('.field').querySelector('output');
-    if(o) o.textContent = e.target.value + '%';
-  }
-  $('savebar').classList.add('on');
-});
-cfg.addEventListener('submit', async e=>{
-  e.preventDefault();
-  let r;
-  try{ r = await fetch('/save', {method:'POST', body:new URLSearchParams(new FormData(cfg))}); }
-  catch(_){ toast('サーバにつながりません', true); return; }
-  let d = {}; try{ d = await r.json(); }catch(_){}
-  if(r.ok && d.ok){
-    cfg.cfg_mtime.value = d.mtime;
-    $('ttl').textContent = cfg.pet_name.value.trim() || $('ttl').textContent;
-    $('savebar').classList.remove('on');
-    toast('ほぞんしました（数秒で反映されます）');
-  }else if(r.status === 409){
-    toast('べつの画面で設定が変わっています。ページを読み込み直してください', true);
-  }else{
-    toast('ほぞんできませんでした', true);
-  }
-});
-
-// ---- 単語けし・会話リセット ----
-$('purgeform').addEventListener('submit', async e=>{
-  e.preventDefault();
-  const w = e.target.word.value.trim();
-  if(!w || !confirm('「'+w+'」を含む会話と日記をわすれる？（ファイルはバックアップされます）')) return;
-  await fetch('/purge', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'word='+encodeURIComponent(w)});
-  e.target.word.value = '';
-  toast('「'+w+'」をわすれます（数秒で反映されます）');
-});
-$('resetform').addEventListener('submit', async e=>{
-  e.preventDefault();
-  if(!confirm('会話の記憶をリセットする？（ファイルはバックアップされます）')) return;
-  await fetch('/reset', {method:'POST'});
-  toast('会話の記憶をリセットします（数秒で反映されます）');
-});
-
-// ---- なかま一覧 ----
-let F=[], LIM=20;
-const esc=s=>s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const ago=t=>!t?'-':(d=>d<1?'きょう':d+'日前')(Math.floor((Date.now()/1000-t)/86400));
-async function loadF(){
-  try{ F = await (await fetch('/friends')).json(); drawF(); }catch(e){}
-}
-function drawF(){
-  const q=document.getElementById('fq').value.trim().toLowerCase();
-  const rows=F.filter(p=>!q||p.name.toLowerCase().includes(q)||p.nick.toLowerCase().includes(q));
-  document.getElementById('friends').innerHTML = rows.slice(0,LIM).map(p=>
-   `<div class="frow${p.here?' here':''}" data-uid="${esc(p.uid)}">
-     <span class="fname">${esc(p.nick||p.name)}${p.nick?` <small>(${esc(p.name)})</small>`:''}`+
-     `${p.here?'<span class="badge">いまいる</span>':''}${p.auto?'<span class="badge m">かおなじみ</span>':(p.manual?'<span class="badge m">てとつなぎ</span>':'')}`+
-     `${p.board_ok?'':' <span title="この名前は文字盤に出せません。ひらがなのあだ名を付けると呼べます">⚠</span>'}</span>
-     <span class="fmeta">${p.met}日 ・ ${ago(p.last)} ・ ${p.lang||'?'}</span>
-     <input class="fnick" value="${esc(p.nick)}" placeholder="あだ名" onchange="saveF(this)">
-     <label class="fgl"><input type="checkbox" class="fgreet" ${p.greet?'checked':''} onchange="saveF(this)">あいさつ</label>
-     <label class="fgl"><input type="checkbox" class="fpoke" ${p.poke?'checked':''} onchange="saveF(this)">ちょっかい</label>
-     <a href="#" title="この人の記録と声を忘れる${p.manual?'(登録も解除)':''}" onclick="delF('${esc(p.uid)}','${esc(p.nick||p.name)}');return false">🗑</a>
-    </div>`).join('') || '<div class="frow">まだだれとも会っていません</div>';
-}
-async function saveF(el){
-  const row = el.closest('.frow');
-  const body = 'uid='+encodeURIComponent(row.dataset.uid)
-    +'&nick='+encodeURIComponent(row.querySelector('.fnick').value)
-    +'&greet='+(row.querySelector('.fgreet').checked?1:0)
-    +'&poke='+(row.querySelector('.fpoke').checked?1:0);
-  await fetch('/friend',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-  loadF();
-}
-async function delF(uid, name){
-  if(!confirm(name+' の記録と声を忘れる？（手動登録なら解除。フレンドは次に会うとまた「はじめて」から）')) return;
-  await fetch('/person_del',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'uid='+encodeURIComponent(uid)});
-  loadF(); loadV();
-}
-async function lookF(){
-  const q=document.getElementById('fq').value.trim();
-  const el=document.getElementById('look');
-  if(q.length<2){ el.innerHTML='<div class="frow">検索欄に2文字以上入れてから押してね</div>'; return; }
-  el.innerHTML='<div class="frow">さがしています...</div>';
-  const rs = await (await fetch('/lookup?q='+encodeURIComponent(q))).json();
-  el.innerHTML = rs.map(p=>
-   `<div class="frow"><span class="fname">${esc(p.name)}</span>
-     <span class="fmeta">${p.met}日 ・ ${ago(p.last)}</span>
-     <button type="button" class="ghost" onclick="adoptF('${esc(p.uid)}',this)">登録</button>
-    </div>`).join('') || '<div class="frow">みつからず（VRCXの記録にいる人だけ探せます）</div>';
-}
-async function adoptF(uid, btn){
-  const name = btn.closest('.frow').querySelector('.fname').textContent;
-  await fetch('/adopt',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'uid='+encodeURIComponent(uid)+'&name='+encodeURIComponent(name)});
-  document.getElementById('look').innerHTML='';
-  loadF();
-}
-loadF();
-
-// ---- こえおぼえ ----
-async function loadV(){
-  try{
-    const d = await (await fetch('/voices')).json();
-    document.getElementById('vprof').innerHTML = d.profiles.length
-      ? '<small>おぼえたこえ: ' + d.profiles.map(p=>
-          `${esc(p.name)}×${p.n} <a href="#" onclick="resetV('${esc(p.uid)}');return false" title="この声を忘れる">✕</a>`
-        ).join('、') + '</small>'
-      : '<small>まだ声をおぼえていません。下の発話に名前を付けてください</small>';
-    const opts = F.slice(0,40).map(p=>`<option value="${esc(p.uid)}">${esc(p.nick||p.name)}</option>`).join('');
-    document.getElementById('voices').innerHTML = d.recent.map(r=>
-     `<div class="frow" data-ts="${r.ts}">
-       <span class="fmeta">${new Date(r.ts*1000).toLocaleTimeString()}</span>
-       <span class="fname">${esc(r.text)}</span>
-       <span class="fmeta">${r.who_name?('→'+esc(r.who_name)):'?'}</span>
-       <select class="fnick vsel"><option value="">だれ?</option>${opts}</select>
-       <button type="button" class="ghost" onclick="labelV(this)">おぼえる</button>
-      </div>`).join('') || '<div class="frow">まだ発話がありません</div>';
-  }catch(e){}
-}
-async function labelV(btn){
-  const row = btn.closest('.frow');
-  const uid = row.querySelector('.vsel').value;
-  if(!uid) return;
-  await fetch('/voice',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'ts='+row.dataset.ts+'&uid='+encodeURIComponent(uid)});
-  loadV();
-}
-async function resetV(uid){
-  await fetch('/voice_reset',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'uid='+encodeURIComponent(uid)});
-  loadV();
-}
-setInterval(loadV, 5000); setTimeout(loadV, 300);
-
-// ---- おぼえてることば ----
-async function loadW(){
-  try{ $('words').innerHTML = await (await fetch('/words')).text(); }catch(e){}
-}
-async function delW(el){
-  // チップは1クリックでわすれる(確認なし。バックアップが毎回残るので取り消せる)
-  const w = el.dataset.w;
-  el.remove();
-  await fetch('/purge', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'word='+encodeURIComponent(w)});
-  toast('「'+w+'」をわすれます');
-}
-loadW();
-</script>
-</body></html>"""
+UI_DIR = HERE / "ui"
 
 def _total_ram_bytes():
     try:
@@ -2088,7 +1983,7 @@ def _prefetch_caps():
         except Exception:
             pass
 
-def _model_options(key="model"):
+def _model_choices(key="model"):
     cur = CFG.get(key) or MODEL
     try:
         with urllib.request.urlopen("http://localhost:11434/api/tags", timeout=3) as r:
@@ -2106,9 +2001,14 @@ def _model_options(key="model"):
             gb += "　⚠ このPCには大きすぎます"
         elif sz and sz > 40e9:
             gb += "　⚠ おそい"
-        sel = " selected" if n == cur else ""
-        opts.append(f'<option value="{_html.escape(n)}"{sel}>{_html.escape(n)}{gb}</option>')
-    return "".join(opts)
+        opts.append({"value": n, "label": f"{n}{gb}", "size": sz, "selected": n == cur})
+    return opts
+
+def _model_options(key="model"):
+    return "".join(
+        f'<option value="{_html.escape(o["value"])}"'
+        f'{" selected" if o["selected"] else ""}>{_html.escape(o["label"])}</option>'
+        for o in _model_choices(key))
 
 def _log_html():
     rows = []
@@ -2166,69 +2066,120 @@ def _weight_opts(key):
     return "".join('<option value="' + v + '"' + (" selected" if v == cur else "") + '>' + label + '</option>'
                    for v, label in (("low", "よわめ"), ("mid", "ふつう"), ("high", "つよめ")))
 
-def _render_ui():
-    """設定ページ全体。__X__プレースホルダを現在のCFGで埋める(ユーザー入力値は必ず末尾で置換)"""
-    return (_UI_HTML
-            .replace("__R__", str(int(CFG["reply_chance"] * 100)))
-            .replace("__F__", str(int(CFG["friend_reply_chance"] * 100)))
-            .replace("__CD__", str(int(CFG["cooldown"])))
-            .replace("__LW__", str(CFG["listen_window"]))
-            .replace("__ID__", str(int(CFG["idle_seconds"])))
-            .replace("__FC__", str(int(CFG["friend_context"])))
-            .replace("__TRAITSC__", _trait_sliders_html(TRAITS[:5]))
-            .replace("__TRAITST__", _trait_sliders_html(TRAITS[5:]))
-            .replace("__RTOGGLES__", _rule_toggle_html())
-            .replace("__TWOPTS__", _weight_opts("trait_weight"))
-            .replace("__PWOPTS__", _weight_opts("persona_weight"))
-            .replace("__PRESETS__", json.dumps(PRESETS, ensure_ascii=False))
-            .replace("__TS__", str(CFG["typing_speed"]))
-            .replace("__CJ__", str(int(CFG["center_jp"])))
-            .replace("__CE__", str(int(CFG["center_en"])))
-            .replace("__MR__", str(int(CFG["max_reply"])))
-            .replace("__B64__", ' selected' if _cells() == 64 else "")
-            .replace("__B128__", ' selected' if _cells() == 128 else "")
-            .replace("__G__", str(int(CFG["rms_gate"])))
-            .replace("__VT__", str(CFG["voice_threshold"]))
-            .replace("__SE__", str(CFG["silence_end"]))
-            .replace("__H__", _html.escape(CFG["stt_hint"]))
-            .replace("__MODELS__", _model_options("model"))
-            .replace("__MODELSE__", _model_options("model_en"))
-            .replace("__HE__", _html.escape(CFG["stt_hint_en"]))
-            .replace("__A0__", ' selected' if CFG.get("mode") == "auto" else "")
-            .replace("__A1__", ' selected' if CFG.get("mode") == "jp" else "")
-            .replace("__A2__", ' selected' if CFG.get("mode") == "en" else "")
-            .replace("__MT__", str(_cfg_mtime))
-            .replace("__GF__", " checked" if CFG.get("greet_friends", True) else "")
-            .replace("__PK__", str(int(CFG["poke_chance"] * 100)))
-            .replace("__BG__", str(CFG["bond_gain"]))
-            .replace("__BH__", str(CFG["bond_halflife_days"]))
-            .replace("__TR__", str(int(CFG["tier_regular"])))
-            .replace("__AD__", str(int(CFG["absence_days"])))
-            .replace("__AA__", str(int(CFG["auto_adopt_days"])))
-            .replace("__WC__", str(int(CFG["world_comment_chance"] * 100)))
-            .replace("__SC__", str(int(CFG["song_comment_chance"] * 100)))
-            .replace("__CH__", str(CFG["care_hours"]))
-            .replace("__CHH__", str(int(CFG["care_hour"])))
-            .replace("__DI__", " checked" if CFG.get("diary", True) else "")
-            .replace("__TH__", " checked" if CFG.get("think") else "")
-            .replace("__KJ__", " checked" if CFG.get("kanji_mode") else "")
-            .replace("__PX__", " checked" if CFG.get("osc_proxy") else "")
-            .replace("__P__", _html.escape(CFG["persona"]))
-            .replace("__PE__", _html.escape(CFG.get("persona_en", "")))
-            .replace("__NG__", _html.escape(CFG.get("ng_words", "")))
-            .replace("__QA__", _html.escape(CFG.get("qa_notes", "")))
-            .replace("__FP__", _html.escape(CFG.get("fake_profile", "")))
-            .replace("__FPE__", _html.escape(CFG.get("fake_profile_en", "")))
-            .replace("__EXE__", _html.escape(str(CFG.get("examples_en", ""))))
-            .replace("__EX__", _html.escape(str(CFG.get("examples", ""))))
-            .replace("__RUE__", _html.escape(str(CFG.get("rules_en", ""))))
-            .replace("__RU__", _html.escape(str(CFG.get("rules", ""))))
-            .replace("__AZE__", _html.escape(str(CFG.get("aizuchi_en", ""))))
-            .replace("__AZ__", _html.escape(str(CFG.get("aizuchi", ""))))
-            .replace("__PNE__", _html.escape(str(CFG.get("pet_name_en", ""))))
-            .replace("__PN__", _html.escape(str(CFG.get("pet_name", ""))))
-            .replace("__ON__", _html.escape(str(CFG.get("owner_name", ""))))
-            .replace("__NAME__", _html.escape(pet())))
+def _git_cmd(args, timeout=12):
+    try:
+        return subprocess.run(["git", *args], cwd=str(HERE), capture_output=True,
+                              text=True, encoding="utf-8", errors="replace",
+                              timeout=timeout)
+    except FileNotFoundError:
+        return None
+    except subprocess.TimeoutExpired as e:
+        cp = subprocess.CompletedProcess(["git", *args], 124)
+        cp.stdout = e.stdout or ""
+        cp.stderr = "git command timed out"
+        return cp
+
+def _git_text(args, timeout=12):
+    p = _git_cmd(args, timeout)
+    if p is None:
+        return None
+    if p.returncode != 0:
+        return ""
+    return (p.stdout or "").strip()
+
+def _update_info(fetch_remote=False):
+    """設定UI用の更新状況。作業ツリーを守るため、dirtyなら更新ボタンは出さない。"""
+    if not (HERE / ".git").exists():
+        return {"ok": False, "message": "アップデート情報を確認できません(Git管理ではありません)"}
+    if _git_cmd(["--version"]) is None:
+        return {"ok": False, "message": "git が見つからないので更新情報を確認できません"}
+
+    branch = _git_text(["branch", "--show-current"]) or "main"
+    remote = _git_text(["config", "--get", f"branch.{branch}.remote"]) or "origin"
+    merge = _git_text(["config", "--get", f"branch.{branch}.merge"])
+    remote_branch = merge.rsplit("/", 1)[-1] if merge else branch
+    upstream = f"{remote}/{remote_branch}"
+    local = _git_text(["rev-parse", "--short", "HEAD"]) or "?"
+    dirty = bool(_git_text(["status", "--porcelain"]))
+
+    if fetch_remote:
+        fetched = _git_cmd(["fetch", "--quiet", remote, remote_branch], timeout=30)
+        if fetched is None or fetched.returncode != 0:
+            msg = (fetched.stderr or fetched.stdout or "GitHubにつながりません").strip() if fetched else "git が見つかりません"
+            return {"ok": False, "message": "更新情報を確認できません: " + msg, "dirty": dirty}
+
+    remote_hash = _git_text(["rev-parse", "--short", upstream])
+    if not remote_hash:
+        return {"ok": False, "message": f"{upstream} が見つかりません。先に更新チェックを押してください", "dirty": dirty}
+
+    counts = _git_text(["rev-list", "--left-right", "--count", f"HEAD...{upstream}"]) or "0\t0"
+    try:
+        ahead, behind = [int(x) for x in counts.split()[:2]]
+    except (TypeError, ValueError):
+        ahead, behind = 0, 0
+
+    if dirty and not fetch_remote:
+        message = "更新チェックで最新版を確認できます"
+    elif dirty:
+        message = "未保存のファイル変更があります。アップデート前にコミットか退避をしてください"
+    elif ahead and behind:
+        message = "ローカルとGitHubの両方に変更があります。手動で確認してください"
+    elif behind:
+        message = f"新しいアップデートがあります({behind}件)。押すと取り込みます"
+    elif ahead:
+        message = f"ローカルの変更がGitHubより先にあります({ahead}件)"
+    else:
+        message = "最新版です"
+
+    return {"ok": True, "message": message, "branch": branch, "remote": upstream,
+            "local": local, "remote_hash": remote_hash, "ahead": ahead,
+            "behind": behind, "dirty": dirty}
+
+def _run_update():
+    info = _update_info(fetch_remote=True)
+    if not info.get("ok"):
+        return info
+    if info.get("dirty"):
+        return {"ok": False, "message": "未保存のファイル変更があるため、アップデートを中止しました"}
+    if info.get("ahead", 0):
+        return {"ok": False, "message": "ローカル変更があるため、自動アップデートできません"}
+    if info.get("behind", 0) <= 0:
+        return {"ok": True, "message": "すでに最新版です"}
+
+    remote_ref = info.get("remote") or "origin/main"
+    remote_name, remote_branch = remote_ref.split("/", 1) if "/" in remote_ref else ("origin", remote_ref)
+    p = _git_cmd(["pull", "--ff-only", "--quiet", remote_name, remote_branch], timeout=60)
+    if p is None or p.returncode != 0:
+        msg = (p.stderr or p.stdout or "git pull に失敗しました").strip() if p else "git が見つかりません"
+        return {"ok": False, "message": "アップデートできませんでした: " + msg}
+    after = _update_info(fetch_remote=False)
+    after["message"] = "アップデートしました。run.bat を起動し直すと反映されます"
+    return after
+
+def _bootstrap_data():
+    load_cfg()
+    traits = []
+    for i, (key, labels, *_rest) in enumerate(TRAITS):
+        traits.append({
+            "key": key,
+            "left": labels[0],
+            "right": labels[1],
+            "group": "character" if i < 5 else "talk",
+        })
+    return {
+        "cfg": dict(CFG),
+        "cfg_mtime": str(_cfg_mtime),
+        "pet_name_display": pet(),
+        "presets": PRESETS,
+        "traits": traits,
+        "rule_toggles": [{"key": k, "label": label} for k, label, *_ in RULES_TOGGLES],
+        "model_options": _model_choices("model"),
+        "model_en_options": _model_choices("model_en"),
+        "weight_options": [{"value": v, "label": label}
+                           for v, label in (("low", "よわめ"),
+                                            ("mid", "ふつう"),
+                                            ("high", "つよめ"))],
+    }
 
 _RESET = threading.Event()   # リセット要求。mainループが安全なタイミングで処理する
 _PURGE = []                  # わすれたい単語のキュー。mainループが安全なタイミングで処理する
@@ -2253,17 +2204,65 @@ class _UIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_file(self, path, content_type):
+        try:
+            body = path.read_bytes()
+        except OSError:
+            self.send_error(404)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):
-        if self.path == "/log":
+        parsed = urlparse(self.path)
+        path, query = parsed.path, parsed.query
+        if path in ("/", "/index.html"):
+            self._send_file(UI_DIR / "index.html", "text/html; charset=utf-8")
+            return
+        if path.startswith("/ui/"):
+            rel = path[len("/ui/"):]
+            if not rel or "\\" in rel or ".." in rel.split("/"):
+                self.send_error(404)
+                return
+            target = (UI_DIR / rel).resolve()
+            try:
+                target.relative_to(UI_DIR.resolve())
+            except ValueError:
+                self.send_error(404)
+                return
+            ctype = {"html": "text/html; charset=utf-8",
+                     "css": "text/css; charset=utf-8",
+                     "js": "text/javascript; charset=utf-8"}.get(
+                         target.suffix.lstrip(".").lower(),
+                         "application/octet-stream")
+            self._send_file(target, ctype)
+            return
+        if path == "/bootstrap":
+            self._send_json(_bootstrap_data())
+            return
+        if path == "/log":
             self._send_html(_log_html())
             return
-        if self.path == "/words":
+        if path == "/update_status":
+            self._send_json(_update_info("fetch=1" in query))
+            return
+        if path == "/words":
             self._send_html(_words_html())
             return
-        if self.path == "/friends":
+        if path == "/memory":
+            q = parse_qs(query).get("q", [""])[0]
+            kind = parse_qs(query).get("kind", ["all"])[0]
+            data = _memory_records(q, kind=kind)
+            data["prompt"] = system_prompt()
+            self._send_json(data)
+            return
+        if path == "/friends":
             self._send_json(growth.snapshot())
             return
-        if self.path == "/voices":   # こえおぼえ: 直近のフレンド発話 + 声紋プロフィール要約
+        if path == "/voices":   # こえおぼえ: 直近のフレンド発話 + 声紋プロフィール要約
             recent = []
             oh = DATA / "others_heard.jsonl"
             if oh.exists():
@@ -2276,11 +2275,11 @@ class _UIHandler(BaseHTTPRequestHandler):
                         pass
             self._send_json({"recent": recent[::-1], "profiles": voiceid.summary()})
             return
-        if self.path.startswith("/lookup"):
-            q = parse_qs(self.path.partition("?")[2]).get("q", [""])[0]
+        if path == "/lookup":
+            q = parse_qs(query).get("q", [""])[0]
             self._send_json(growth.lookup(q))
             return
-        if self.path == "/status":
+        if path == "/status":
             load_cfg()
             names = {"jp": "日本語モード", "en": "英語モード", "auto": "じどう"}
             cur = _html.escape(str(active_model()))
@@ -2314,21 +2313,43 @@ class _UIHandler(BaseHTTPRequestHandler):
                 f"いまいるなかま: {pres}　界隈: {circle}</small>"
                 + (f"<br><small>{sense}</small>" if sense else "") + warn)
             return
-        load_cfg()
-        self._send_html(_render_ui())
+        self.send_error(404)
 
     def do_POST(self):
         if self.path == "/reset":
             _RESET.set()
             self._send_json({"ok": True})
             return
+        if self.path == "/update":
+            self._send_json(_run_update())
+            return
         n = int(self.headers.get("Content-Length") or 0)
         q = parse_qs(self.rfile.read(n).decode("utf-8"))
         if self.path == "/purge":    # 単語けし: mainループが安全なタイミングでファイルを書き換える
             w = q.get("word", [""])[0].strip()
+            kind = q.get("kind", ["all"])[0]
             if w:
-                _PURGE.append(w)
+                _PURGE.append((kind, w))
             self._send_json({"ok": True})
+            return
+        if self.path == "/memory_clear":
+            kind = q.get("kind", ["all"])[0]
+            n = clear_memory(kind)
+            if kind in ("all", "conversation"):
+                _RESET.set()
+            if n:
+                vrcx_sense.reload_diary()
+                vrcx_sense.reload_memory()
+                vrcx_sense.reload_titles()
+            self._send_json({"ok": True, "n": n})
+            return
+        if self.path == "/memory_del":
+            n = delete_memory_record(q.get("id", [""])[0])
+            if n:
+                vrcx_sense.reload_diary()
+                vrcx_sense.reload_memory()
+                vrcx_sense.reload_titles()
+            self._send_json({"ok": bool(n), "n": n})
             return
         if self.path == "/friend":   # なかまのあだ名・挨拶・ちょっかい設定(growth.jsonはUIだけが編集経路)
             ok = growth.set_person(q.get("uid", [""])[0],
@@ -2399,6 +2420,7 @@ class _UIHandler(BaseHTTPRequestHandler):
             "qa_notes": q.get("qa_notes", [""])[0].strip()[:1500],
             "fake_profile": q.get("fake_profile", [""])[0].strip()[:500],
             "fake_profile_en": q.get("fake_profile_en", [""])[0].strip()[:500],
+            "knowledge": str(CFG.get("knowledge") or "")[:4000],
             # base_rulesはUIから消えたので持ち越し(旧デフォルト・旧プリセット文は""に正規化。
             # 単純にキーを消すと/saveの全書きで独自編集文が失われる)
             "base_rules": "" if str(CFG.get("base_rules") or "").strip() in _OLD_BASE_SET
@@ -2617,9 +2639,10 @@ def main():
             while _PURGE:
                 # 1語ずつ完結させる。ここで外へ例外を投げると、popした語も残りのキューも
                 # そのまま消えて「消したのに消えてない」になる
-                word = _PURGE.pop(0)
+                item = _PURGE.pop(0)
+                kind, word = item if isinstance(item, tuple) else ("all", item)
                 try:
-                    n = purge_word(word)
+                    n = purge_word(word, kind=kind)
                 except OSError as e:
                     log(f"「{word}」を消せませんでした（あとでもう一度）: {e}")
                     continue
@@ -2628,6 +2651,8 @@ def main():
                 recent.clear()
                 recent.extend(kept)
                 vrcx_sense.reload_diary()
+                vrcx_sense.reload_memory()
+                vrcx_sense.reload_titles()
                 log(f"「{word}」を含む記憶を{n}行けしました(バックアップ保存済み)")
             heard = [("owner", t) for t in drain(tail.poll())]
             heard += [("owner", (ev.get("text") or "").strip())
