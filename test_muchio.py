@@ -303,12 +303,14 @@ m.DATA.mkdir(exist_ok=True)
 assert m._ears_alive(), "触った直後なのに耳が死んでいる判定"
 assert isinstance(m._osc_off_hint(), bool)
 
-# ---- 設定UI: プレースホルダの置換漏れがあると画面に __XX__ が露出する ----
-_mo = m._model_options
-m._model_options = lambda key="model": "<option>dummy</option>"   # ollama非依存でページ生成
-_left = _re.findall(r"__[A-Z]+__", m._render_ui())
+# ---- 設定UI: 静的HTMLに生成プレースホルダを残さず、初期値はbootstrapで渡す ----
+_left = _re.findall(r"__[A-Z]+__", (m.UI_DIR / "index.html").read_text(encoding="utf-8"))
 assert not _left, f"UIプレースホルダの置換漏れ: {_left}"
-m._model_options = _mo
+_mc = m._model_choices
+m._model_choices = lambda key="model": [{"value": "dummy", "label": "dummy", "selected": True}]
+_boot = m._bootstrap_data()
+assert _boot["cfg"] and _boot["cfg_mtime"] and _boot["model_options"], "bootstrap不足"
+m._model_choices = _mc
 
 # ---- フレンドのかいわ記憶: タグ付き発言だけ拾う(飼い主・むちこ自身は入れない) ----
 _lines = ['{"ts":1,"role":"user","text":"[Poyopon] やっほー"}',

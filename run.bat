@@ -8,15 +8,18 @@ set MIC=
 set SPK=
 rem ----------------------------------------------------
 cd /d %~dp0
+set "ROOT=%~dp0"
+set "MAIN=%ROOT%muchio_llm.py"
+set "LISTENER=%ROOT%vrc_listener.py"
 rem Pick python: the one recorded by setup.bat, else first non-Store python, else PATH.
 set "PY=python"
 set "PYX="
 if exist python_path.txt set /p PY=<python_path.txt
 if not exist "%PY%" for /f "delims=" %%P in ('where python 2^>nul ^| findstr /v /i "WindowsApps"') do if not defined PYX set "PYX=%%P"
 if not exist "%PY%" if defined PYX set "PY=%PYX%"
-rem Kill old instances first to avoid port conflicts and double listening.
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'muchio_llm.py|vrc_listener.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
-start "MuchioLLM" /min "%PY%" muchio_llm.py
+rem Kill old instances from this folder only to avoid stopping another extracted copy.
+powershell -NoProfile -Command "$root=[IO.Path]::GetFullPath('%ROOT%'); Get-CimInstance Win32_Process | Where-Object { $cmd=$_.CommandLine; $cmd -and $cmd.IndexOf($root, [StringComparison]::OrdinalIgnoreCase) -ge 0 -and $cmd -match 'muchio_llm\.py|vrc_listener\.py' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }" >nul 2>&1
+start "MuchioLLM" /min "%PY%" "%MAIN%"
 rem Start the ear processes only when their libraries exist, else warn visibly
 rem instead of letting the windows flash-crash (happens when setup.bat was skipped).
 "%PY%" -c "import numpy, pyaudiowpatch" >nul 2>&1
@@ -28,8 +31,8 @@ echo.
 pause
 goto :open
 :ears
-start "VRCListener" /min "%PY%" vrc_listener.py %SPK%
-start "OwnerMic" /min "%PY%" vrc_listener.py --mic %MIC%
+start "VRCListener" /min "%PY%" "%LISTENER%" %SPK%
+start "OwnerMic" /min "%PY%" "%LISTENER%" --mic %MIC%
 :open
 rem Open the settings page once the UI server is up.
 timeout /t 3 /nobreak >nul

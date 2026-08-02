@@ -118,6 +118,18 @@ def reload_diary():
                 except json.JSONDecodeError:
                     pass
 
+def reload_titles():
+    """動画タイトルキャッシュがUIから消されたとき、メモリ上のキャッシュも読み直す"""
+    if not _data:
+        return
+    _titles.clear()
+    vp = _data / "videos.json"
+    if vp.exists():
+        try:
+            _titles.update(json.loads(vp.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, OSError):
+            pass
+
 
 def reload_memory():
     """おもいでを現在の界隈側の会話ファイルから引き直す(界隈切替・ワールド移動時)"""
