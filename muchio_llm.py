@@ -2146,10 +2146,13 @@ def _run_update():
 
     remote_ref = info.get("remote") or "origin/main"
     remote_name, remote_branch = remote_ref.split("/", 1) if "/" in remote_ref else ("origin", remote_ref)
+    config_backup = CONFIG.read_bytes() if CONFIG.exists() else None
     p = _git_cmd(["reset", "--hard", f"{remote_name}/{remote_branch}"], timeout=60)
     if p is None or p.returncode != 0:
         msg = (p.stderr or p.stdout or "git reset に失敗しました").strip() if p else "git が見つかりません"
         return {"ok": False, "message": "アップデートできませんでした: " + msg}
+    if config_backup is not None:
+        CONFIG.write_bytes(config_backup)
     after = _update_info(fetch_remote=False)
     after["message"] = "アップデートしました。run.bat を起動し直すと反映されます"
     return after

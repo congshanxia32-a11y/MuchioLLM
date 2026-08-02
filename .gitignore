@@ -6,3 +6,5 @@ __pycache__/voiceid.cpython-310.pyc
 __pycache__/vrcx_sense.cpython-310.pyc
 
 data/
+
+config.json
