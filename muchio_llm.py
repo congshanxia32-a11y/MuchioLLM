@@ -2813,6 +2813,59 @@ def _peer_max_turns():
     except (TypeError, ValueError):
         return 8
 
+
+def _voice_heard_by_ts():
+    heard = {}
+    path = DATA / "others_heard.jsonl"
+    if not path.exists():
+        return heard
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return heard
+    for line in lines:
+        try:
+            row = json.loads(line)
+            heard[float(row["ts"])] = row
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            pass
+    return heard
+
+
+def _voice_page(limit=50, before=None):
+    heard = _voice_heard_by_ts()
+    pending = voiceid.pending(limit=limit, before=before)
+    recent = []
+    for row in pending["items"]:
+        entry = heard.get(row["ts"])
+        if entry is None or "text" not in entry:
+            continue
+        recent.append({"ts": row["ts"], "text": entry["text"],
+                       "who_name": entry.get("who_name", ""),
+                       "lang": entry.get("lang", row.get("lang", "unknown"))})
+    return {"recent": recent, "next_before": pending["next_before"],
+            "profiles": voiceid.summary()}
+
+
+def _voice_candidates(ts, limit=20):
+    entry = _voice_heard_by_ts().get(ts)
+    if entry is None or "text" not in entry:
+        return []
+    rows = voiceid.candidates(ts, CFG["voice_threshold"],
+                              lang=entry.get("lang"), limit=limit)
+    heard = _voice_heard_by_ts()
+    return [{"ts": row["ts"], "text": heard[row["ts"]]["text"],
+             "score": row["score"], "lang": row["lang"]}
+            for row in rows if row["ts"] in heard and "text" in heard[row["ts"]]]
+
+
+def _voice_batch(uid, timestamps):
+    name = growth.display_name(uid)
+    if not name:
+        return {"added": 0, "missing": 0, "skipped": 0}
+    return voiceid.add_samples(uid, name, timestamps)
+
+
 class _UIHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -2903,17 +2956,29 @@ class _UIHandler(BaseHTTPRequestHandler):
             self._send_json(growth.snapshot() if CFG.get("vrcx_enabled", True) else [])
             return
         if path == "/voices":   # こえおぼえ: 直近のフレンド発話 + 声紋プロフィール要約
-            recent = []
-            oh = DATA / "others_heard.jsonl"
-            if oh.exists():
-                for line in oh.read_text(encoding="utf-8").splitlines()[-10:]:
-                    try:
-                        j = json.loads(line)
-                        recent.append({"ts": j["ts"], "text": j["text"],
-                                       "who_name": j.get("who_name", "")})
-                    except (json.JSONDecodeError, KeyError):
-                        pass
-            self._send_json({"recent": recent[::-1], "profiles": voiceid.summary()})
+            q = parse_qs(query)
+            try:
+                limit = min(100, max(20, int(q.get("limit", ["50"])[0])))
+            except ValueError:
+                limit = 50
+            try:
+                before = float(q["before"][0]) if "before" in q else None
+            except ValueError:
+                before = None
+            self._send_json(_voice_page(limit=limit, before=before))
+            return
+        if path == "/voice_candidates":
+            q = parse_qs(query)
+            try:
+                ts = float(q.get("ts", [""])[0])
+            except ValueError:
+                self._send_json({"ok": False, "error": "invalid ts"}, 400)
+                return
+            try:
+                limit = min(100, max(1, int(q.get("limit", ["20"])[0])))
+            except ValueError:
+                limit = 20
+            self._send_json({"candidates": _voice_candidates(ts, limit=limit)})
             return
         if path == "/lookup":
             q = parse_qs(query).get("q", [""])[0]
@@ -3040,6 +3105,17 @@ class _UIHandler(BaseHTTPRequestHandler):
             name = growth.display_name(uid)
             ok = bool(name) and voiceid.add_sample(uid, name, ts)
             self._send_json({"ok": ok})
+            return
+        if self.path == "/voice_batch":
+            uid = q.get("uid", [""])[0]
+            try:
+                timestamps = [float(ts) for ts in q.get("ts", [])]
+            except ValueError:
+                timestamps = []
+            if not timestamps or not growth.display_name(uid):
+                self._send_json({"ok": False, "error": "invalid voice batch"}, 400)
+                return
+            self._send_json({"ok": True, **_voice_batch(uid, timestamps)})
             return
         if self.path == "/voice_reset":
             self._send_json({"ok": voiceid.reset(q.get("uid", [""])[0])})

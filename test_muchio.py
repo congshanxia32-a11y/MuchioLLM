@@ -615,4 +615,103 @@ out = []
 m.osc_parse(m._osc("/avatar/parameters/KAT_Pointer", 3), out)
 assert out == [("/avatar/parameters/KAT_Pointer", [3])]
 
+# ---- voice memory: timestamp-paged history, explicit candidates, and batch labels ----
+# These assertions fail if the page joins unrecorded embeddings, ignores the cursor,
+# auto-registers candidate rows, or accepts a UID without a display name.
+import json as _json
+import threading as _threading
+import urllib.error as _urlerror
+import urllib.parse as _urlparse
+import urllib.request as _urlrequest
+
+_voice_td = Path(tempfile.mkdtemp())
+_voice_data_bak = m.DATA
+_voice_paths_bak = (m.voiceid.DATA, m.voiceid.VOICES, m.voiceid.EMBEDS,
+                    m.voiceid._profiles, m.voiceid._mtime,
+                    m.voiceid._embed_cache_key, m.voiceid._embed_cache_rows)
+_voice_name_bak = m.growth.display_name
+try:
+    m.DATA = _voice_td
+    m.voiceid.DATA = _voice_td
+    m.voiceid.VOICES = _voice_td / "voices.json"
+    m.voiceid.EMBEDS = _voice_td / "embeds.jsonl"
+    m.voiceid._profiles = {}
+    m.voiceid._mtime = 0.0
+    m.voiceid._embed_cache_key = None
+    m.voiceid._embed_cache_rows = []
+    (_voice_td / "others_heard.jsonl").write_text(
+        '{"ts": 3.0, "text": "latest", "who_name": "Friend A", "lang": "en"}\n'
+        '{"ts": 2.0, "text": "middle", "who_name": "Friend B", "lang": "en"}\n'
+        '{"ts": 1.0, "text": "oldest", "who_name": "Friend C", "lang": "jp"}\n',
+        encoding="utf-8")
+    m.voiceid.EMBEDS.write_text(
+        '{"ts": 3.0, "v": [1.0, 0.0], "lang": "en", "lang_conf": 0.9}\n'
+        '{"ts": 2.0, "v": [0.9, 0.1], "lang": "en", "lang_conf": 0.9}\n'
+        '{"ts": 1.0, "v": [0.0, 1.0], "lang": "jp", "lang_conf": 0.9}\n'
+        '{"ts": 0.0, "v": [1.0, 0.0], "lang": "en", "lang_conf": 0.9}\n',
+        encoding="utf-8")
+    m.growth.display_name = lambda uid: {"usr_a": "Alice", "usr_b": "Bob"}.get(uid)
+
+    page = m._voice_page(limit=2)
+    assert [item["ts"] for item in page["recent"]] == [3.0, 2.0], page
+    assert page["next_before"] == 2.0, page
+    assert page["profiles"] == [], page
+    assert m._voice_page(limit=2, before=2.0)["recent"] == [{
+        "ts": 1.0, "text": "oldest", "who_name": "Friend C", "lang": "jp",
+    }]
+
+    candidates = m._voice_candidates(3.0)
+    assert [(item["ts"], item["text"], item["lang"]) for item in candidates] == [
+        (2.0, "middle", "en"),
+    ], candidates
+    assert candidates[0]["score"] > 0.9, candidates
+    assert m.voiceid.summary() == [], "viewing candidates must not register them"
+    assert m._voice_candidates(999.0) == []
+
+    result = m._voice_batch("usr_a", [1.0, 2.0])
+    assert result == {"added": 2, "missing": 0, "skipped": 0}, result
+    assert m._voice_batch("missing", [3.0]) == {"added": 0, "missing": 0, "skipped": 0}
+
+    _voice_server = m.HTTPServer(("127.0.0.1", 0), m._UIHandler)
+    _voice_thread = _threading.Thread(target=_voice_server.serve_forever, daemon=True)
+    _voice_thread.start()
+    _voice_base = f"http://127.0.0.1:{_voice_server.server_port}"
+    try:
+        with _urlrequest.urlopen(_voice_base + "/voices?limit=999") as _response:
+            _voice_http_page = _json.load(_response)
+        assert len(_voice_http_page["recent"]) <= 100, _voice_http_page
+        try:
+            _urlrequest.urlopen(_voice_base + "/voice_candidates?ts=bad")
+            raise AssertionError("invalid candidate timestamp must return HTTP 400")
+        except _urlerror.HTTPError as _error:
+            assert _error.code == 400
+            assert _json.load(_error) == {"ok": False, "error": "invalid ts"}
+        _voice_request = _urlrequest.Request(
+            _voice_base + "/voice_batch",
+            data=_urlparse.urlencode({"uid": "missing", "ts": [3.0]}, doseq=True).encode(),
+            method="POST")
+        try:
+            _urlrequest.urlopen(_voice_request)
+            raise AssertionError("batch label for an unknown UID must return HTTP 400")
+        except _urlerror.HTTPError as _error:
+            assert _error.code == 400
+        _voice_request = _urlrequest.Request(
+            _voice_base + "/voice_batch",
+            data=_urlparse.urlencode({"uid": "usr_b", "ts": [3.0]}, doseq=True).encode(),
+            method="POST")
+        with _urlrequest.urlopen(_voice_request) as _response:
+            assert _json.load(_response) == {
+                "ok": True, "added": 1, "missing": 0, "skipped": 0,
+            }
+    finally:
+        _voice_server.shutdown()
+        _voice_server.server_close()
+        _voice_thread.join()
+finally:
+    m.DATA = _voice_data_bak
+    (m.voiceid.DATA, m.voiceid.VOICES, m.voiceid.EMBEDS,
+     m.voiceid._profiles, m.voiceid._mtime,
+     m.voiceid._embed_cache_key, m.voiceid._embed_cache_rows) = _voice_paths_bak
+    m.growth.display_name = _voice_name_bak
+
 print("ok")
