@@ -660,6 +660,20 @@ try:
         "ts": 1.0, "text": "oldest", "who_name": "Friend C", "lang": "jp",
     }]
 
+    # Missing transcript metadata must not leave a page short or skip older valid history.
+    (_voice_td / "others_heard.jsonl").write_text(
+        '{"ts": 3.0, "text": "latest", "who_name": "Friend A", "lang": "en"}\n'
+        '{"ts": 1.0, "text": "oldest", "who_name": "Friend C", "lang": "jp"}\n',
+        encoding="utf-8")
+    page = m._voice_page(limit=2)
+    assert [item["ts"] for item in page["recent"]] == [3.0, 1.0], page
+    assert page["next_before"] is None, page
+    (_voice_td / "others_heard.jsonl").write_text(
+        '{"ts": 3.0, "text": "latest", "who_name": "Friend A", "lang": "en"}\n'
+        '{"ts": 2.0, "text": "middle", "who_name": "Friend B", "lang": "en"}\n'
+        '{"ts": 1.0, "text": "oldest", "who_name": "Friend C", "lang": "jp"}\n',
+        encoding="utf-8")
+
     candidates = m._voice_candidates(3.0)
     assert [(item["ts"], item["text"], item["lang"]) for item in candidates] == [
         (2.0, "middle", "en"),
@@ -686,6 +700,12 @@ try:
         except _urlerror.HTTPError as _error:
             assert _error.code == 400
             assert _json.load(_error) == {"ok": False, "error": "invalid ts"}
+        for _invalid_ts in ("nan", "inf"):
+            try:
+                _urlrequest.urlopen(_voice_base + "/voice_candidates?ts=" + _invalid_ts)
+                raise AssertionError(f"{_invalid_ts} candidate timestamp must return HTTP 400")
+            except _urlerror.HTTPError as _error:
+                assert _error.code == 400
         _voice_request = _urlrequest.Request(
             _voice_base + "/voice_batch",
             data=_urlparse.urlencode({"uid": "missing", "ts": [3.0]}, doseq=True).encode(),
@@ -695,6 +715,16 @@ try:
             raise AssertionError("batch label for an unknown UID must return HTTP 400")
         except _urlerror.HTTPError as _error:
             assert _error.code == 400
+        for _invalid_ts in ("nan", "inf"):
+            _voice_request = _urlrequest.Request(
+                _voice_base + "/voice_batch",
+                data=_urlparse.urlencode({"uid": "usr_b", "ts": [_invalid_ts]}, doseq=True).encode(),
+                method="POST")
+            try:
+                _urlrequest.urlopen(_voice_request)
+                raise AssertionError(f"{_invalid_ts} batch timestamp must return HTTP 400")
+            except _urlerror.HTTPError as _error:
+                assert _error.code == 400
         _voice_request = _urlrequest.Request(
             _voice_base + "/voice_batch",
             data=_urlparse.urlencode({"uid": "usr_b", "ts": [3.0]}, doseq=True).encode(),

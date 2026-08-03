@@ -9,7 +9,7 @@ VRCPet・Unity・アバターは無改造。stdlibのみ（依存ゼロ）。
   python muchio_llm.py --say てすと    # 文字盤に一発表示（動作確認用）
   python muchio_llm.py --ask こんにちは # LLM返答を生成して表示のみ（送信しない）
 """
-import difflib, hashlib, json, os, platform, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request, uuid
+import difflib, hashlib, json, math, os, platform, random, re, shutil, socket, struct, subprocess, sys, threading, time, unicodedata, urllib.request, uuid
 from collections import deque
 from pathlib import Path
 
@@ -2834,16 +2834,22 @@ def _voice_heard_by_ts():
 
 def _voice_page(limit=50, before=None):
     heard = _voice_heard_by_ts()
-    pending = voiceid.pending(limit=limit, before=before)
-    recent = []
-    for row in pending["items"]:
-        entry = heard.get(row["ts"])
-        if entry is None or "text" not in entry:
-            continue
-        recent.append({"ts": row["ts"], "text": entry["text"],
-                       "who_name": entry.get("who_name", ""),
-                       "lang": entry.get("lang", row.get("lang", "unknown"))})
-    return {"recent": recent, "next_before": pending["next_before"],
+    recent, cursor = [], before
+    while True:
+        pending = voiceid.pending(limit=limit, before=cursor)
+        for row in pending["items"]:
+            entry = heard.get(row["ts"])
+            if entry is None or "text" not in entry:
+                continue
+            recent.append({"ts": row["ts"], "text": entry["text"],
+                           "who_name": entry.get("who_name", ""),
+                           "lang": entry.get("lang", row.get("lang", "unknown"))})
+        if pending["next_before"] is None:
+            break
+        cursor = pending["next_before"]
+    page = recent[:limit]
+    return {"recent": page,
+            "next_before": page[-1]["ts"] if len(recent) > limit else None,
             "profiles": voiceid.summary()}
 
 
@@ -2972,6 +2978,9 @@ class _UIHandler(BaseHTTPRequestHandler):
             try:
                 ts = float(q.get("ts", [""])[0])
             except ValueError:
+                self._send_json({"ok": False, "error": "invalid ts"}, 400)
+                return
+            if not math.isfinite(ts):
                 self._send_json({"ok": False, "error": "invalid ts"}, 400)
                 return
             try:
@@ -3110,6 +3119,8 @@ class _UIHandler(BaseHTTPRequestHandler):
             uid = q.get("uid", [""])[0]
             try:
                 timestamps = [float(ts) for ts in q.get("ts", [])]
+                if not all(math.isfinite(ts) for ts in timestamps):
+                    raise ValueError
             except ValueError:
                 timestamps = []
             if not timestamps or not growth.display_name(uid):
