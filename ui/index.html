@@ -185,6 +185,35 @@
 <select name="model_en"></select>
 <small>英語が得意なものを（ABEJA等の日本語特化は英語が弱い）</small></div>
 <label class="check"><input type="checkbox" name="think"> かんがえてからはなす(賢くなるが返事がおそくなる・対応モデルのみ)</label>
+<label class="check"><input type="checkbox" name="dynamic_enabled"> 自動ゆらぎを有効にする</label>
+<div class="field"><label for="dynamic-period">自動ゆらぎの1往復(分)</label>
+<input id="dynamic-period" type="number" name="dynamic_period_minutes" min="1" max="180" step="1" value="30">
+<small>人格と生成設定が下限から上限まで動いて戻る時間。保存するまでプレビューだけ動きます</small></div>
+<div class="field"><label>生成のゆらぎ</label><div id="sampling-ranges"></div>
+<small>temperature/top_pだけを連続的に変えます。返答長の上限(num_predict)は固定です</small></div>
+<div class="monologue-settings">
+<h3>ひとりごとの連作</h3>
+<p class="desc">直前のひとりごとをどこまで続けるか、接続句と避ける話題を調整します。</p>
+<div class="monologue-grid">
+<div class="field"><div class="lr"><label>連作の最大回数</label><input type="number" name="monologue_max_continuations" min="0" max="10" step="1"></div>
+<small>0で毎回、新しい話題から始めます。</small></div>
+<div class="field"><div class="lr"><label>同じ主題を避ける回数</label><input type="number" name="monologue_topic_cooldown" min="0" max="10" step="1"></div>
+<small>連作が終わった後、直近の主題を避ける回数です。</small></div>
+</div>
+<div class="field"><label>接続句の使い方</label>
+<select name="monologue_connector_mode">
+<option value="always">続きでは毎回使う</option>
+<option value="random">ときどき使う</option>
+<option value="off">使わない</option>
+</select>
+<small>「さっきも言ったけど」などを返答の先頭に付けます。</small></div>
+<div class="field"><label>接続句の候補（1行に1つ）</label>
+<textarea name="monologue_connectors" rows="4" placeholder="さっきも言ったけど&#10;続けて言うと"></textarea>
+<small>空欄なら内蔵の候補を使います。</small></div>
+<div class="field"><label>避ける話題語（カンマ区切り）</label>
+<textarea name="monologue_avoid_words" rows="2" placeholder="虚無、存在、空間"></textarea>
+<small>連作を区切った後、この語を含む主題を避けます。</small></div>
+</div>
 </section>
 
 <section class="card wide section-page" data-section="llm"><h2>じんかく</h2>

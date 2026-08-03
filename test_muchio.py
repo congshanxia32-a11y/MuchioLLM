@@ -332,6 +332,8 @@ assert m._pick_friend_lines(_lines, 1) == ["[friend] だれかの声"], "新し�
 # ---- せいかくスライダー: まんなか(45-55)は無音、はしに寄るほど強い文+矛盾ガード ----
 _tr_bak = {k: m.CFG.get(k) for k, *_ in m.TRAITS}
 _tw_bak = m.CFG.get("trait_weight")
+_dynamic_bak = m.CFG.get("dynamic_enabled")
+m.CFG["dynamic_enabled"] = False
 for k, *_ in m.TRAITS:
     m.CFG[k] = 50
 m.CFG["trait_weight"] = "mid"
@@ -369,6 +371,7 @@ assert "楽観" in m._trait_lines(False)
 for k, *_ in m.TRAITS:
     m.CFG[k] = _tr_bak[k] if _tr_bak[k] is not None else m.DEFAULTS[k]
 m.CFG["trait_weight"] = _tw_bak if _tw_bak is not None else m.DEFAULTS["trait_weight"]
+m.CFG["dynamic_enabled"] = _dynamic_bak if _dynamic_bak is not None else m.DEFAULTS["dynamic_enabled"]
 
 # ---- じんかくテンプレ: 新構造(persona+examples+traits+checks)と値の妥当性 ----
 _tkeys = {k for k, *_ in m.TRAITS}
@@ -478,7 +481,7 @@ try:
     m.CFG["advanced_safety_enabled"], m.CFG["mode"] = _ng_safety_bak, _ng_mode_bak
     _ng_words_bak, _ng_chat_bak = m.CFG["ng_words"], m.ollama_chat
     _ng_calls = []
-    def _fake_ng_chat(history, user_text, timeout=90):
+    def _fake_ng_chat(history, user_text, timeout=90, diversity=0):
         _ng_calls.append(user_text)
         return "静寂と沈黙の話" if len(_ng_calls) == 1 else "別の話題だよ"
     m.CFG["ng_words"] = "静寂,沈黙"
@@ -783,5 +786,80 @@ finally:
      m.voiceid._profiles, m.voiceid._mtime,
      m.voiceid._embed_cache_key, m.voiceid._embed_cache_rows) = _voice_paths_bak
     m.growth.display_name = _voice_name_bak
+
+# ---- 自動ゆらぎ: 固定値互換・範囲内の三角波・周期再現 ----
+_dynamic_cfg_bak = dict(m.CFG)
+try:
+    m.CFG["dynamic_enabled"] = False
+    assert m.dynamic_config_value("trait_smart", 50, 0, 100, now=123.0) == 50
+    m.CFG["dynamic_enabled"] = True
+    m.CFG["dynamic_period_minutes"] = 10
+    _values = [m.dynamic_value("trait_smart", 50, 20, 80, now=t)
+               for t in (0.0, 1.0, 123.4, 299.9, 600.0, 901.0)]
+    assert all(20 <= v <= 80 for v in _values), _values
+    assert abs(m.dynamic_value("trait_smart", 50, 20, 80, now=17.25) - \
+               m.dynamic_value("trait_smart", 50, 20, 80, now=617.25)) < 1e-9
+    assert abs(m.dynamic_value("trait_smart", 50, 80, 20, now=123.0) - \
+               m.dynamic_value("trait_smart", 50, 20, 80, now=123.0)) < 1e-9
+finally:
+    m.CFG.clear(); m.CFG.update(_dynamic_cfg_bak)
+
+# ---- 重複再生成: 通常時は設定値、再試行時だけ多様性を上げて上限内に収める ----
+_base_temp, _base_top_p = m.adaptive_sampling(0.35, 0.85, 0)
+assert (_base_temp, _base_top_p) == (0.35, 0.85)
+_retry_temp, _retry_top_p = m.adaptive_sampling(0.35, 0.85, 1)
+assert 0.35 < _retry_temp <= 1.5
+assert 0.85 < _retry_top_p <= 1.0
+assert m.adaptive_sampling(1.5, 1.0, 3) == (1.5, 1.0)
+
+# ---- ひとりごとの連作: 履歴・接続句・主題クールダウン ----
+_conversation = []
+for _i in range(14):
+    _conversation.extend([("user", f"発言 {_i}"), ("assistant", f"返答 {_i}")])
+assert len(m.reply_history(_conversation, "local")) == 20
+assert len(m.reply_history(_conversation, "local", exclude_last=True)) == 19
+assert m.reply_history(_conversation, "local", exclude_last=True)[-1] == ("user", "発言 13")
+assert m.reply_history(_conversation, "peer")[-1] == ("assistant", "返答 13")
+_memory_bak = m.CFG.get("memory_conversation_enabled")
+m.CFG["memory_conversation_enabled"] = False
+assert m.reply_history(_conversation, "local") == []
+m.CFG["memory_conversation_enabled"] = _memory_bak
+
+assert m.monologue_topic("虚無と存在の境界") == "abstract"
+assert m.monologue_topic("座標と距離の話") == "place"
+assert m.monologue_topic("今日は机の輪郭を測る") == "other"
+assert m.topic_on_cooldown("虚空を考える", ["abstract"])
+assert not m.topic_on_cooldown("虚空を考える", ["place"])
+
+_prefixes = {m.monologue_prefix(i) for i in range(1, 11)}
+assert _prefixes <= set(m.MONOLOGUE_PREFIXES)
+assert m.monologue_prefix(0) == ""
+assert m.monologue_prefix(m.MONOLOGUE_MAX_CONTINUATIONS + 1) == ""
+assert m.monologue_prompt(1, "直前の返答", ["abstract"]).startswith("直前のひとりごと")
+assert "新しい観察対象" in m.monologue_prompt(m.MONOLOGUE_MAX_CONTINUATIONS,
+                                                 "直前の返答", ["abstract"])
+for _key in ("monologue_max_continuations", "monologue_topic_cooldown",
+             "monologue_connector_mode", "monologue_connectors",
+             "monologue_avoid_words"):
+    assert _key in m.DEFAULTS and _key in m.CFG, _key
+_connector_cfg_bak = {k: m.CFG.get(k) for k in (
+    "monologue_connector_mode", "monologue_connectors")}
+try:
+    m.CFG["monologue_connector_mode"] = "off"
+    assert m.monologue_prefix(1) == ""
+    m.CFG["monologue_connector_mode"] = "always"
+    m.CFG["monologue_connectors"] = "接続A\n接続B"
+    assert m.monologue_prefix(1) in {"接続A", "接続B"}
+finally:
+    m.CFG.update(_connector_cfg_bak)
+_limit_cfg_bak = {k: m.CFG.get(k) for k in (
+    "monologue_max_continuations", "monologue_topic_cooldown")}
+try:
+    m.CFG["monologue_max_continuations"] = 99
+    m.CFG["monologue_topic_cooldown"] = -2
+    assert m.monologue_max_continuations() == 10
+    assert m.monologue_topic_cooldown() == 0
+finally:
+    m.CFG.update(_limit_cfg_bak)
 
 print("ok")

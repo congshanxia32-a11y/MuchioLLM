@@ -30,6 +30,50 @@ def test_peer_key_has_visibility_and_copy_controls():
     assert "async function copyPeerKey" in (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
 
 
+def test_dynamic_range_controls_exist_for_traits_and_llm_sampling():
+    app = (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+    assert "dynamic_enabled" in app
+    assert "_min" in app and "_max" in app
+    assert "llm_temperature" in app
+    assert "llm_top_p" in app
+
+
+def test_dynamic_settings_are_exposed_in_bootstrap_defaults():
+    import muchio_llm as m
+    cfg = m._bootstrap_data()["cfg"]
+    assert "dynamic_enabled" in cfg
+    assert "dynamic_period_minutes" in cfg
+    for key, *_ in m.TRAITS:
+        assert f"{key}_min" in cfg
+        assert f"{key}_max" in cfg
+    assert "llm_temperature_min" in cfg
+    assert "llm_temperature_max" in cfg
+    assert "llm_top_p_min" in cfg
+    assert "llm_top_p_max" in cfg
+
+
+def test_monologue_controls_are_submitted_with_main_config_form():
+    text = HTML.read_text(encoding="utf-8")
+    start = text.index('<form id="cfg"')
+    end = text.index("</form>", start)
+    for field in ("monologue_max_continuations", "monologue_topic_cooldown",
+                  "monologue_connector_mode", "monologue_connectors",
+                  "monologue_avoid_words"):
+        pos = text.index(f'name="{field}"')
+        control_start = text.rfind("<", start, pos)
+        control_end = text.index(">", pos)
+        inside_form = start < pos < end
+        associated_with_form = 'form="cfg"' in text[control_start:control_end]
+        assert inside_form or associated_with_form, field
+
+
+def test_monologue_controls_are_bound_to_bootstrap_and_save_ui():
+    app = (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+    for field in ("monologue_max_continuations", "monologue_topic_cooldown",
+                  "monologue_connector_mode", "monologue_connectors",
+                  "monologue_avoid_words"):
+        assert field in app, field
+
 
 def test_unitypackage_descriptions_cover_both_packages_and_repair_mapping():
     html = HTML.read_text(encoding="utf-8")
@@ -42,8 +86,13 @@ def test_unitypackage_descriptions_cover_both_packages_and_repair_mapping():
     assert "VRCFury" in html
     assert "Muchio/KATアセットに依存しません" in html
 
+
 if __name__ == "__main__":
     test_peer_settings_are_submitted_with_main_config_form()
     test_peer_key_has_visibility_and_copy_controls()
+    test_dynamic_range_controls_exist_for_traits_and_llm_sampling()
+    test_dynamic_settings_are_exposed_in_bootstrap_defaults()
+    test_monologue_controls_are_submitted_with_main_config_form()
+    test_monologue_controls_are_bound_to_bootstrap_and_save_ui()
     test_unitypackage_descriptions_cover_both_packages_and_repair_mapping()
     print("ok")

@@ -35,8 +35,98 @@ HOLD_PER_CHAR = 0.25   # 1文字あたりの読む時間(体感調整用)
 PAGES_MAX = 3          # 長い返答のページ送り上限(全体=max_reply×これ)
 FRAME_GAP = 0.25       # KATブロック送信間隔（本家準拠）
 HISTORY_TURNS = 20     # LLMに渡す直近往復数
+CONVERSATION_HISTORY_TURNS = 10
+MONOLOGUE_MAX_CONTINUATIONS = 10
+MONOLOGUE_TOPIC_COOLDOWN = 3
+MONOLOGUE_PREFIXES = (
+    "さっきも言ったけど",
+    "さっきの話の続きだけど",
+    "続けて言うと",
+    "そこから考えると",
+    "であるからして",
+    "また別の見方をすると",
+)
+MONOLOGUE_TOPIC_GROUPS = (
+    ("abstract", ("虚無", "虚空", "空虚", "空間", "存在", "実体", "実在", "意味")),
+    ("place", ("座標", "距離", "場所", "位置", "地形", "部屋")),
+    ("recognition", ("認識", "観測", "意識", "視線", "真実", "知覚")),
+    ("time", ("時間", "瞬間", "未来", "過去", "記憶", "変化")),
+    ("relation", ("他者", "人間", "孤独", "会話", "言葉", "関係", "声")),
+    ("world", ("光", "音", "粒子", "物理", "世界", "景色", "温度")),
+)
 MIN_CHARS = 2          # これより短い発話には自分から返事しない(名前を呼ばれたら別)
 UI_PORT = 8787         # 設定UI http://localhost:8787
+
+
+def reply_history(source_history, origin, exclude_last=False):
+    """Return bounded context for one reply without mutating the source."""
+    if origin != "peer" and not CFG.get("memory_conversation_enabled", True):
+        return []
+    turns = HISTORY_TURNS if origin == "peer" else CONVERSATION_HISTORY_TURNS
+    items = list(source_history[-turns * 2:])
+    return items[:-1] if exclude_last else items
+
+
+def monologue_topic(text):
+    text = str(text or "")
+    custom_avoid = [w.strip() for w in re.split(r"[、,\n]", str(CFG.get("monologue_avoid_words", ""))) if w.strip()]
+    if any(word in text for word in custom_avoid):
+        return "abstract"
+    for topic, words in MONOLOGUE_TOPIC_GROUPS:
+        if any(word in text for word in words):
+            return topic
+    return "other"
+
+
+def _monologue_int(key, default, lo, hi):
+    try:
+        return min(hi, max(lo, int(float(CFG.get(key, default)))))
+    except (TypeError, ValueError):
+        return default
+
+
+def monologue_max_continuations():
+    return _monologue_int("monologue_max_continuations", MONOLOGUE_MAX_CONTINUATIONS, 0, 10)
+
+
+def monologue_topic_cooldown():
+    return _monologue_int("monologue_topic_cooldown", MONOLOGUE_TOPIC_COOLDOWN, 0, 10)
+
+
+def _monologue_connector_list():
+    raw = str(CFG.get("monologue_connectors", ""))
+    values = [line.strip() for line in raw.splitlines() if line.strip()]
+    return values or list(MONOLOGUE_PREFIXES)
+
+
+def topic_on_cooldown(text, recent_topics):
+    topic = monologue_topic(text)
+    cooldown = monologue_topic_cooldown()
+    return cooldown > 0 and topic != "other" and topic in list(recent_topics)[-cooldown:]
+
+
+def monologue_prefix(chain_index):
+    if not 1 <= int(chain_index) <= monologue_max_continuations():
+        return ""
+    mode = str(CFG.get("monologue_connector_mode", "always"))
+    if mode == "off" or (mode == "random" and random.random() >= 0.55):
+        return ""
+    return random.choice(_monologue_connector_list())
+
+
+def monologue_prompt(chain_index, previous_reply, recent_topics):
+    chain_index = int(chain_index)
+    previous_reply = str(previous_reply or "").strip()[:120]
+    if chain_index >= monologue_max_continuations():
+        lead = "連作はいったん区切る。直前のひとりごとから離れ、新しい観察対象を選ぶ。"
+    elif chain_index > 0:
+        lead = ("直前のひとりごとの続きとして、因果を一段だけ進める。"
+                f"直前の返答は「{previous_reply}」。")
+    else:
+        lead = "ひとりごとは直前の会話か、いま観察できる具体的な対象から始める。"
+    if recent_topics:
+        lead += "直近で扱った抽象的な主題は、連作の区切り後には繰り返さず別の対象へ移る。"
+    return lead
 
 # 短い人格返答は、温度を上げるほど「賢そうな独白」へ流れやすい。
 # UIに出さない内部の初期値。config.jsonに同名キーを書けば上書きできる。
@@ -77,6 +167,11 @@ DEFAULTS = {
     "persona": "{name}本人として一言しゃべる。きいた話への相槌や、みじかい感想。"
                "まいかい言い回しと文の形を変える。たまに昔の話題にもふれる。気軽に割り込む。",
     "idle_seconds": 60,         # ひとりごとの間隔秒(0=しない)。±ゆらぎあり
+    "monologue_max_continuations": 10,
+    "monologue_topic_cooldown": 3,
+    "monologue_connector_mode": "always",  # off / random / always
+    "monologue_connectors": "さっきも言ったけど\nさっきの話の続きだけど\n続けて言うと\nそこから考えると\nであるからして\nまた別の見方をすると",
+    "monologue_avoid_words": "虚無、虚空、空虚、空間、存在、実体、実在、意味",
     "friend_context": 10,       # 発言前に読みこむ、ちかくのフレンドのさいきんの発言数(0=しない)
     "trait_smart": 50,          # せいかくスライダー(0-100)。まんなか45-55はプロンプトに何も足さない
     "trait_mean": 50,
@@ -85,6 +180,15 @@ DEFAULTS = {
     "trait_optimism": 50,
     "trait_verbose": 50,        # ここから「はなしかた」グループ
     "trait_hard": 50,
+    "dynamic_enabled": False,   # 人格・生成設定を下限/上限の間で時間変化させる
+    "dynamic_period_minutes": 30.0,
+    "trait_smart_min": 50, "trait_smart_max": 50,
+    "trait_mean_min": 50, "trait_mean_max": 50,
+    "trait_energy_min": 50, "trait_energy_max": 50,
+    "trait_instinct_min": 50, "trait_instinct_max": 50,
+    "trait_optimism_min": 50, "trait_optimism_max": 50,
+    "trait_verbose_min": 50, "trait_verbose_max": 50,
+    "trait_hard_min": 50, "trait_hard_max": 50,
     "trait_weight": "mid",      # せいかくスライダーの効きぐあい(low/mid/high)
     "persona_weight": "mid",    # 人格じゆうテキストの効きぐあい(low/mid/high)
     "persona_character_enabled": True,
@@ -103,6 +207,10 @@ DEFAULTS = {
     "llm_temperature": LLM_TEMPERATURE,  # 低いほど人格と出力形式が安定する
     "llm_top_p": LLM_TOP_P,
     "llm_num_predict": LLM_NUM_PREDICT,
+    "llm_temperature_min": LLM_TEMPERATURE,
+    "llm_temperature_max": LLM_TEMPERATURE,
+    "llm_top_p_min": LLM_TOP_P,
+    "llm_top_p_max": LLM_TOP_P,
     "think": False,             # かんがえてからはなす(思考モード)。賢くなるが返事が遅くなる
     "rms_gate": 400,            # リスナーの音量ゲート(下げると拾いやすい)
     "voice_threshold": 0.55,    # 声紋一致のきびしさ(cosine)。上げると他人空似が減るが名無しが増える
@@ -170,6 +278,50 @@ DEFAULTS = {
 }
 CFG = dict(DEFAULTS)
 _cfg_mtime = 0.0
+
+_DYNAMIC_BASE_KEYS = (
+    "trait_smart", "trait_mean", "trait_energy", "trait_instinct",
+    "trait_optimism", "trait_verbose", "trait_hard",
+    "llm_temperature", "llm_top_p",
+)
+
+def _dynamic_phase(key):
+    """項目ごとの安定した位相。再起動しても項目の動き方を変えない。"""
+    digest = hashlib.sha256(("muchio.dynamic:" + str(key)).encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") / float(1 << 64)
+
+def dynamic_value(key, static, minimum, maximum, now=None):
+    """自動ゆらぎ中の現在値。OFF時や同値の範囲では固定値を返す。"""
+    try:
+        static = float(static)
+        lo, hi = sorted((float(minimum), float(maximum)))
+    except (TypeError, ValueError):
+        return static
+    if not CFG.get("dynamic_enabled") or abs(hi - lo) < 1e-9:
+        return static
+    try:
+        period = float(CFG.get("dynamic_period_minutes", 30.0)) * 60.0
+    except (TypeError, ValueError):
+        period = 1800.0
+    period = max(60.0, min(180.0 * 60.0, period))
+    t = time.time() if now is None else float(now)
+    phase = (_dynamic_phase(key) + t / period) % 1.0
+    position = phase * 2.0 if phase <= 0.5 else (1.0 - phase) * 2.0
+    return lo + (hi - lo) * position
+
+def dynamic_config_value(key, static, minimum, maximum, now=None):
+    """dynamic_valueの設定値用ラッパー。入力範囲の逆転も正規化する。"""
+    return dynamic_value(key, static, minimum, maximum, now=now)
+
+def adaptive_sampling(temperature, top_p, diversity=0):
+    """重複再生成時だけサンプリングを広げる。通常時の設定値は変更しない。"""
+    try:
+        level = max(0, min(4, int(diversity)))
+        temperature = min(1.5, max(0.0, float(temperature)) + 0.18 * level)
+        top_p = min(1.0, max(0.1, float(top_p)) + 0.04 * level)
+        return temperature, top_p
+    except (TypeError, ValueError):
+        return temperature, top_p
 
 # 運用ガード(編集不可・常時ON)。旧base_rulesの教訓部分。{name}/{lang}は実行時展開。
 # 敬語・話し言葉(rule_polite管轄)と例文(examples管轄)はここに入れない
@@ -374,7 +526,15 @@ def load_cfg():
     if m != _cfg_mtime:
         _cfg_mtime = m
         try:
-            CFG = {**DEFAULTS, **json.loads(CONFIG.read_text(encoding="utf-8"))}
+            raw_cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
+            CFG = {**DEFAULTS, **raw_cfg}
+            # 旧設定は固定値をそのまま上下限へ移行する。保存するまでファイルは変更しない。
+            for key in _DYNAMIC_BASE_KEYS:
+                static = CFG.get(key, DEFAULTS.get(key, 50))
+                if f"{key}_min" not in raw_cfg:
+                    CFG[f"{key}_min"] = static
+                if f"{key}_max" not in raw_cfg:
+                    CFG[f"{key}_max"] = static
             NAME_RE = _name_regex(CFG["pet_name"])
             OSC_DEST = ("127.0.0.1", 9002 if CFG.get("osc_proxy") else 9000)
             return True
@@ -740,10 +900,16 @@ def _trait_band(v):
         return 4
     return 5
 
+def _dynamic_cfg_value(key, default=50, now=None):
+    static = CFG.get(key, default)
+    minimum = CFG.get(f"{key}_min", static)
+    maximum = CFG.get(f"{key}_max", static)
+    return dynamic_config_value(key, static, minimum, maximum, now=now)
+
 def _guard_lines(en=False):
     out = ""
     for cond, jp, eng in TRAIT_GUARDS:
-        if all(lo <= int(float(CFG.get(k, 50))) <= hi for k, (lo, hi) in cond.items()):
+        if all(lo <= int(round(_dynamic_cfg_value(k))) <= hi for k, (lo, hi) in cond.items()):
             out += eng if en else jp
     return out
 
@@ -756,7 +922,7 @@ def _trait_lines(en=False):
             continue
         if i >= 5 and not CFG.get("persona_talk_enabled", True):
             continue
-        b = _trait_band(int(float(CFG.get(key, 50))))
+        b = _trait_band(int(round(_dynamic_cfg_value(key))))
         if b is not None:
             body += (eng if en else jp)[b]
     if CFG.get("persona_character_enabled", True):
@@ -2361,7 +2527,7 @@ def _reply_contract_hits(raw):
         hits.append("meta")
     return hits
 
-def ollama_chat(history, user_text, timeout=90):
+def ollama_chat(history, user_text, timeout=90, diversity=0):
     # 自分の過去返答は直近3件だけ文脈に入れる(お手本が多いと型に固執する)。ユーザー発言は全部入れる
     a_idx = [i for i, (r, _) in enumerate(history) if r == "assistant"]
     keep = set(a_idx[-3:])
@@ -2391,13 +2557,14 @@ def ollama_chat(history, user_text, timeout=90):
     thinky = want_think()
     npred = 4000 if thinky else 100
     try:
-        temperature = min(1.5, max(0.0, float(CFG.get("llm_temperature", LLM_TEMPERATURE))))
+        temperature = min(1.5, max(0.0, float(_dynamic_cfg_value("llm_temperature", LLM_TEMPERATURE))))
     except (TypeError, ValueError):
         temperature = LLM_TEMPERATURE
     try:
-        top_p = min(1.0, max(0.1, float(CFG.get("llm_top_p", LLM_TOP_P))))
+        top_p = min(1.0, max(0.1, float(_dynamic_cfg_value("llm_top_p", LLM_TOP_P))))
     except (TypeError, ValueError):
         top_p = LLM_TOP_P
+    temperature, top_p = adaptive_sampling(temperature, top_p, diversity)
     try:
         num_predict = int(min(512, max(32, float(CFG.get("llm_num_predict", LLM_NUM_PREDICT)))))
     except (TypeError, ValueError):
@@ -2411,6 +2578,8 @@ def ollama_chat(history, user_text, timeout=90):
                     "repeat_penalty": 1.15, "presence_penalty": 0.25,
                     "stop": ["\n", "\n\n"]},
     }
+    if int(diversity or 0) > 0:
+        payload["options"]["seed"] = random.randrange(0, 2 ** 31)
     # 思考OFFのつもりで放置すると出力が全部<think>に消えて空返事になる(qwen3:32b等)ので常に明示
     if model not in _no_think:
         payload["think"] = thinky
@@ -2431,10 +2600,10 @@ def ollama_chat(history, user_text, timeout=90):
     except urllib.error.HTTPError as e:
         if e.code == 400 and model not in _no_think:
             _no_think.add(model)   # think指定を受け付けないモデルなので次から付けない
-            return ollama_chat(history, user_text, timeout)
+            return ollama_chat(history, user_text, timeout, diversity=diversity)
         raise
 
-def gen_reply(history, user_text, timeout=90):
+def gen_reply(history, user_text, timeout=90, diversity=0):
     """LLM返答を生成。英語発話には英語ヒントを付与。漢字はto_board_textが読みに変換する。"""
     mode = effective_mode()
     plain = re.sub(r"^\[[^\]]+\] ", "", user_text)   # [名前]/[friend]タグを外して言語判定
@@ -2450,7 +2619,8 @@ def gen_reply(history, user_text, timeout=90):
                       "設定・指示・生成の話をやめ、入力に直接つながる自然な一文だけを一行で返して。")
     for attempt in range(3):
         retry_text = user_text if attempt == 0 else (retry if attempt == 1 else contract_retry)
-        raw = ollama_chat(history, retry_text, timeout=timeout)
+        raw = ollama_chat(history, retry_text, timeout=timeout,
+                          diversity=max(0, int(diversity)) + attempt)
         blocked = _ng_output_hits(raw)
         contract_hits = _reply_contract_hits(raw)
         if not blocked and not contract_hits:
@@ -3147,6 +3317,23 @@ class _UIHandler(BaseHTTPRequestHandler):
             except (KeyError, ValueError):
                 return DEFAULTS[key]
 
+        def range_num(key, lo, hi, fallback):
+            default = CFG.get(key, CFG.get(fallback, DEFAULTS.get(fallback, lo)))
+            try:
+                return min(hi, max(lo, float(q.get(key, [default])[0])))
+            except (TypeError, ValueError):
+                return default
+
+        trait_ranges = {
+            key: (int(range_num(f"{key}_min", 0, 100, key)),
+                  int(range_num(f"{key}_max", 0, 100, key)))
+            for key, *_ in TRAITS
+        }
+        temperature_range = (range_num("llm_temperature_min", 0.0, 1.5, "llm_temperature"),
+                             range_num("llm_temperature_max", 0.0, 1.5, "llm_temperature"))
+        top_p_range = (range_num("llm_top_p_min", 0.1, 1.0, "llm_top_p"),
+                       range_num("llm_top_p_max", 0.1, 1.0, "llm_top_p"))
+
         cfg = {
             "pet_name": (q.get("pet_name", [""])[0].strip() or DEFAULTS["pet_name"])[:16],
             "pet_name_en": (q.get("pet_name_en", [""])[0].strip() or DEFAULTS["pet_name_en"])[:32],
@@ -3161,7 +3348,26 @@ class _UIHandler(BaseHTTPRequestHandler):
             "cooldown": num("cooldown", 0.0, 300.0),
             "listen_window": num("listen_window", 0.0, 30.0),
             "idle_seconds": num("idle_seconds", 0.0, 3600.0),
+            "monologue_max_continuations": int(num("monologue_max_continuations", 0, 10)),
+            "monologue_topic_cooldown": int(num("monologue_topic_cooldown", 0, 10)),
+            "monologue_connector_mode": q.get("monologue_connector_mode", ["always"])[0]
+                                      if q.get("monologue_connector_mode", ["always"])[0]
+                                      in ("off", "random", "always") else "always",
+            "monologue_connectors": q.get("monologue_connectors", [""])[0].strip()[:1000],
+            "monologue_avoid_words": q.get("monologue_avoid_words", [""])[0].strip()[:500],
             "friend_context": int(num("friend_context", 0, 50)),
+            "dynamic_enabled": "dynamic_enabled" in q,
+            "dynamic_period_minutes": num("dynamic_period_minutes", 1.0, 180.0),
+            **{f"{key}_min": pair[0] for key, pair in trait_ranges.items()},
+            **{f"{key}_max": pair[1] for key, pair in trait_ranges.items()},
+            **{key: int(round((pair[0] + pair[1]) / 2))
+               for key, pair in trait_ranges.items()},
+            "llm_temperature_min": temperature_range[0],
+            "llm_temperature_max": temperature_range[1],
+            "llm_temperature": (temperature_range[0] + temperature_range[1]) / 2,
+            "llm_top_p_min": top_p_range[0],
+            "llm_top_p_max": top_p_range[1],
+            "llm_top_p": (top_p_range[0] + top_p_range[1]) / 2,
             "trait_weight": q.get("trait_weight", ["mid"])[0]
                             if q.get("trait_weight", ["mid"])[0] in ("low", "mid", "high") else "mid",
             "persona_weight": q.get("persona_weight", ["mid"])[0]
@@ -3201,8 +3407,6 @@ class _UIHandler(BaseHTTPRequestHandler):
             "stt_hint": (q.get("stt_hint", [""])[0].strip() or DEFAULTS["stt_hint"])[:200],
             "model": (q.get("model", [""])[0].strip() or DEFAULTS["model"])[:120],
             "model_en": (q.get("model_en", [""])[0].strip() or DEFAULTS["model_en"])[:120],
-            "llm_temperature": min(1.5, max(0.0, float(CFG.get("llm_temperature", LLM_TEMPERATURE)))),
-            "llm_top_p": min(1.0, max(0.1, float(CFG.get("llm_top_p", LLM_TOP_P)))),
             "llm_num_predict": int(min(512, max(32, float(CFG.get("llm_num_predict", LLM_NUM_PREDICT))))),
             "mode": q.get("mode", ["auto"])[0] if q.get("mode", ["auto"])[0] in ("auto", "jp", "en") else "auto",
             "core_identity_en": (q.get("core_identity_en", [""])[0].strip()
@@ -3248,7 +3452,9 @@ class _UIHandler(BaseHTTPRequestHandler):
             "memory_diary_enabled": "memory_diary_enabled" in q,
         }
         for k, *_ in TRAITS:
-            cfg[k] = int(num(k, 0, 100))
+            # 旧UIは単一のtrait_*を送るので尊重し、新UIは上下限の中点を使う。
+            if k in q:
+                cfg[k] = int(num(k, 0, 100))
         for k, *_ in RULES_TOGGLES:
             cfg[k] = k in q          # checkbox: 未チェックはキーごと来ない
         CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -3326,6 +3532,9 @@ def main():
     peer_session_id = None
     peer_session_last = 0.0
     peer_idle_scheduler = IdlePeerScheduler()
+    monologue_chain = 0
+    monologue_topics = deque(maxlen=10)
+    last_monologue_reply = ""
 
     def drain(events):
         nonlocal last_said
@@ -3368,16 +3577,23 @@ def main():
         Cloma→こま等)ので、こちらで先頭に付けて確実に出す
         thinking: 生成中に点々アニメを出す(発話への返答。思考モード中は生成が遅いので全経路)"""
         nonlocal shown_at, last_reply, hide_hold
+        nonlocal monologue_chain, last_monologue_reply
         if (thinking or want_think()) and not (_dots_thread and _dots_thread.is_alive()):
             page_queue.clear()   # 点々が盤面を消すので、前の返答の続きページも破棄
             _dots_start("", already_shown=False,   # listen_window=0で相槌なしの直接返答
                         hold_check=lambda: time.time() - last_said < SAID_HOLD)
         peer_origin = origin in ("peer", "peer_idle")
+        idle_origin = origin == "idle"
+        chain_index = monologue_chain if idle_origin else 0
+        if idle_origin:
+            prompt_text = (prompt_text + "\n" +
+                           monologue_prompt(chain_index, last_monologue_reply,
+                                            monologue_topics))
+        elif origin not in ("peer", "peer_idle"):
+            monologue_chain = 0
+            last_monologue_reply = ""
         source_history = peer_history if peer_origin else history
-        hist = (source_history[-HISTORY_TURNS * 2:-1] if exclude_last
-                else source_history[-HISTORY_TURNS * 2:])
-        if origin != "peer" and not CFG.get("memory_conversation_enabled", True):
-            hist = []
+        hist = reply_history(source_history, origin, exclude_last=exclude_last)
         try:
             try:
                 raw = gen_reply(hist, prompt_text)
@@ -3389,18 +3605,33 @@ def main():
             dup = lambda r: any(too_similar(r, p) for p in recent)
             if reply and dup(reply):   # 似た返事の連発は1回だけ言い直させる
                 try:
-                    raw = gen_reply(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。")
+                    raw = gen_reply(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。",
+                                    diversity=2)
                     reply = to_board_text(raw)
                 except Exception as e:
                     log(f"言い直し失敗: {e}")
+            if idle_origin and chain_index >= monologue_max_continuations():
+                if topic_on_cooldown(reply, monologue_topics):
+                    try:
+                        raw = gen_reply(
+                            hist,
+                            prompt_text + "\n連作を区切ったので、直近とは別の具体的な対象を選ぶ。",
+                            diversity=2)
+                        reply = to_board_text(raw)
+                        if topic_on_cooldown(reply, monologue_topics):
+                            log("主題が直近と重なったため、ひとりごとを見送る")
+                            return False
+                    except Exception as e:
+                        log(f"主題変更失敗: {e}")
             if not reply or dup(reply):
                 log(f"返答が重複/空のためスキップ: {raw!r}")
                 return False
             recent.append(reply)
-            prefix = to_board_text(prefix) if prefix else None
-            if prefix and not reply.lower().startswith(prefix.lower()):
-                reply = prefix + "、" + reply   # 長くてもページ送りが吸収する
-            elif not prefix:
+            reply_prefix = monologue_prefix(chain_index) if idle_origin else prefix
+            reply_prefix = to_board_text(reply_prefix) if reply_prefix else None
+            if reply_prefix and not reply.lower().startswith(reply_prefix.lower()):
+                reply = reply_prefix + "、" + reply   # 長くてもページ送りが吸収する
+            elif not reply_prefix:
                 # モデルが勝手につける「なまえ、」は常に剥がす(話者と無関係にnyanya等へ固定化し、
                 # 履歴に残って自己強化する)。名指ししたい経路はprefixで明示的につける
                 reply = strip_call(reply)
@@ -3424,6 +3655,15 @@ def main():
             elif CFG.get("memory_conversation_enabled", True):
                 save_conv("assistant", reply)
                 history.append(("assistant", reply))
+            if idle_origin:
+                topic = monologue_topic(reply)
+                if topic != "other":
+                    monologue_topics.append(topic)
+                last_monologue_reply = reply
+                limit = monologue_max_continuations()
+                monologue_chain = (0 if limit <= 0 else
+                                   (1 if chain_index >= limit else min(limit,
+                                                                        chain_index + 1)))
             if origin in ("human", "peer", "peer_idle") and conversation_id and _PEER_RELAY is not None:
                 if turn is None:
                     turn = _peer_max_turns()
@@ -3546,6 +3786,9 @@ def main():
                 last_heard = now
                 fresh.append((who, text, tagged))
             if fresh:
+                monologue_chain = 0
+                monologue_topics.clear()
+                last_monologue_reply = ""
                 # 生成中にたまった発言も履歴には全部残すが、返事は一番新しいものに対して返す。
                 # 古い順に全部返していると会話がどんどん遅れていくため
                 peer_pending.clear()
@@ -3660,12 +3903,12 @@ def main():
                         w = random.choice(ws)
                         log(f"ひとりごと(ことば: {w})")
                         say(f"（まえにきいた「{w}」を使い、いまのVRChatの場に結びつけた"
-                            "具体的な観察を一文だけ）")
+                            "具体的な観察を一文だけ）", origin="idle")
                     else:
                         log("ひとりごと")
                         say("（だれもしゃべっていない。抽象的な自己分析は禁止。"
                             "いまいるVRChatの場か直前の会話に結びつく具体的な観察を一文だけ。"
-                            "だれの名前もよばない）")
+                            "だれの名前もよばない）", origin="idle")
             history[:] = history[-HISTORY_TURNS * 4:]
             time.sleep(0.2)
         except KeyboardInterrupt:

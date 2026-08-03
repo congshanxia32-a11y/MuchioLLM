@@ -41,7 +41,7 @@ async function copyPeerKey(){
 
 let BOOT = null;
 const PERCENT_FIELDS = new Set(['reply_chance','friend_reply_chance','poke_chance','world_comment_chance','song_comment_chance']);
-const CHECK_FIELDS = new Set(['think','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
+const CHECK_FIELDS = new Set(['think','dynamic_enabled','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
   'persona_character_enabled','persona_talk_enabled','persona_preferences_enabled','persona_free_text_enabled','persona_examples_enabled',
   'advanced_growth_enabled','advanced_sense_enabled','advanced_listener_enabled','advanced_rules_enabled','advanced_aizuchi_enabled','advanced_safety_enabled']);
 CHECK_FIELDS.add('core_prompt_enabled');
@@ -53,6 +53,8 @@ CHECK_FIELDS.add('peer_enabled');
 CHECK_FIELDS.add('peer_idle_enabled');
 CHECK_FIELDS.add('peer_idle_initiator');
 CHECK_FIELDS.add('social_context_enabled');
+const MONOLOGUE_FIELDS = ['monologue_max_continuations','monologue_topic_cooldown',
+  'monologue_connector_mode','monologue_connectors','monologue_avoid_words'];
 const DEFAULT_WEIGHT_OPTIONS = [{value:'low', label:'よわめ'}, {value:'mid', label:'ふつう'}, {value:'high', label:'つよめ'}];
 function optHtml(items, selected){
   return items.map(o=>`<option value="${esc(o.value)}"${o.value===selected?' selected':''}>${esc(o.label)}</option>`).join('');
@@ -60,14 +62,80 @@ function optHtml(items, selected){
 function renderWeightOptions(items, selected){
   return items.map(o=>`<option value="${esc(o.value)}"${o.value===selected?' selected':''}>${esc(o.label)}</option>`).join('');
 }
+function dynamicPreviewPhase(key){
+  let h = 2166136261;
+  for(const ch of `muchio.dynamic:${key}`){
+    h ^= ch.charCodeAt(0);
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h / 4294967296;
+}
+function dynamicPreviewValue(key, lo, hi, cfg){
+  if(!cfg.dynamic_enabled || lo === hi) return (lo + hi) / 2;
+  const period = Math.max(60, Math.min(180 * 60, Number(cfg.dynamic_period_minutes || 30) * 60));
+  const phase = (dynamicPreviewPhase(key) + performance.now() / 1000 / period) % 1;
+  const position = phase <= .5 ? phase * 2 : (1 - phase) * 2;
+  return lo + (hi - lo) * position;
+}
+function renderDynamicRange(item, cfg, options={}){
+  const key = item.key;
+  const base = Number(cfg[key] ?? options.defaultValue ?? 50);
+  const lo = Number(cfg[`${key}_min`] ?? base);
+  const hi = Number(cfg[`${key}_max`] ?? base);
+  const min = Number(options.min ?? 0), max = Number(options.max ?? 100), step = options.step ?? 1;
+  const unit = options.unit || '%';
+  const left = options.left || item.left || '';
+  const right = options.right || item.right || '';
+  return `<div class="field dynamic-range-field" data-dynamic-key="${esc(key)}" data-min="${min}" data-max="${max}" data-unit="${esc(unit)}">`+
+    `<div class="lr"><span class="pole">${esc(left)}</span><span class="dynamic-values">`+
+    `<output class="dynamic-lo">${lo}${esc(unit)}</output><output class="dynamic-now">${base}${esc(unit)}</output><output class="dynamic-hi">${hi}${esc(unit)}</output>`+
+    `</span><span class="pole">${esc(right)}</span></div>`+
+    `<div class="dynamic-range"><span class="dynamic-track"></span><span class="dynamic-fill"></span><i class="dynamic-marker"></i>`+
+    `<input class="dynamic-min-input" type="range" name="${esc(key)}_min" min="${min}" max="${max}" step="${step}" value="${lo}" aria-label="${esc(key)}の下限">`+
+    `<input class="dynamic-max-input" type="range" name="${esc(key)}_max" min="${min}" max="${max}" step="${step}" value="${hi}" aria-label="${esc(key)}の上限">`+
+    `</div></div>`;
+}
+function syncDynamicRange(field){
+  const minInput = field.querySelector('.dynamic-min-input');
+  const maxInput = field.querySelector('.dynamic-max-input');
+  if(!minInput || !maxInput) return;
+  let lo = Number(minInput.value), hi = Number(maxInput.value);
+  if(lo > hi){ [lo, hi] = [hi, lo]; minInput.value = lo; maxInput.value = hi; }
+  const min = Number(field.dataset.min), max = Number(field.dataset.max);
+  const unit = field.dataset.unit || '';
+  const cfg = Object.fromEntries(new FormData($('cfg')));
+  cfg.dynamic_enabled = $('cfg').dynamic_enabled?.checked;
+  const now = dynamicPreviewValue(field.dataset.dynamicKey, lo, hi, cfg);
+  const span = Math.max(1, max - min);
+  field.querySelector('.dynamic-lo').textContent = `${lo}${unit}`;
+  field.querySelector('.dynamic-now').textContent = `${Math.round(now * 100) / 100}${unit}`;
+  field.querySelector('.dynamic-hi').textContent = `${hi}${unit}`;
+  field.querySelector('.dynamic-fill').style.left = `${(lo - min) / span * 100}%`;
+  field.querySelector('.dynamic-fill').style.width = `${(hi - lo) / span * 100}%`;
+  field.querySelector('.dynamic-marker').style.left = `${Math.max(0, Math.min(100, (now - min) / span * 100))}%`;
+}
+function syncAllDynamicRanges(){
+  document.querySelectorAll('.dynamic-range-field').forEach(syncDynamicRange);
+}
+function animateDynamicPreview(){
+  syncAllDynamicRanges();
+  requestAnimationFrame(animateDynamicPreview);
+}
 function renderTraits(targetId, traits, cfg){
   const box = $(targetId);
   box.innerHTML = traits.map(t=>{
-    const v = Number(cfg[t.key] ?? 50);
-    return `<div class="field"><div class="lr"><span class="pole">${esc(t.left)}</span>`+
-      `<output>${v}%</output><span class="pole">${esc(t.right)}</span></div>`+
-      `<input type="range" name="${esc(t.key)}" min="0" max="100" step="5" value="${v}"></div>`;
+    return renderDynamicRange(t, cfg, {min:0, max:100, step:1, unit:'%'});
   }).join('');
+}
+function renderSamplingRanges(cfg){
+  const box = $('sampling-ranges');
+  if(!box) return;
+  box.innerHTML = [
+    renderDynamicRange({key:'llm_temperature', left:'安定', right:'多様'}, cfg,
+      {min:0, max:1.5, step:.05, unit:''}),
+    renderDynamicRange({key:'llm_top_p', left:'しぼる', right:'広げる'}, cfg,
+      {min:.1, max:1, step:.05, unit:''})
+  ].join('');
 }
 function renderRuleToggles(items, cfg){
   $('rule-toggles').innerHTML = items.map(r=>
@@ -111,8 +179,12 @@ function setField(form, name, value){
     if(el.type === 'checkbox') el.checked = !!value;
     else el.value = value ?? '';
     if(el.type === 'range'){
-      const o = el.closest('.field')?.querySelector('output');
-      if(o) o.textContent = el.value + '%';
+      const field = el.closest('.dynamic-range-field');
+      if(field) syncDynamicRange(field);
+      else {
+        const o = el.closest('.field')?.querySelector('output');
+        if(o) o.textContent = el.value + '%';
+      }
     }
   });
 }
@@ -126,6 +198,7 @@ function applyBootstrap(d){
   form.cfg_mtime.value = d.cfg_mtime || '';
   renderTraits('traits-character', (d.traits || []).filter(t=>t.group === 'character'), cfg);
   renderTraits('traits-talk', (d.traits || []).filter(t=>t.group === 'talk'), cfg);
+  renderSamplingRanges(cfg);
   renderRuleToggles(d.rule_toggles || [], cfg);
   form.model.innerHTML = optHtml(d.model_options || [], cfg.model);
   form.model_en.innerHTML = optHtml(d.model_en_options || [], cfg.model_en);
@@ -136,9 +209,11 @@ function applyBootstrap(d){
     const v = PERCENT_FIELDS.has(k) ? Math.round(Number(v0 || 0) * 100) : v0;
     setField(form, k, v);
   }
+  MONOLOGUE_FIELDS.forEach(k=>setField(form, k, cfg[k] ?? ''));
   CHECK_FIELDS.forEach(k=>setField(form, k, !!cfg[k]));
   initCategoryToggles();
   initExternalToggles();
+  syncAllDynamicRanges();
   form.cfg_mtime.value = d.cfg_mtime || '';
   initPresets();
   updateSetupStatus();
@@ -437,10 +512,11 @@ function initPresets(){
       const p = PRESETS[k];
       f.persona.value = p.persona; f.persona_en.value = p.persona_en;
       f.examples.value = p.examples; f.examples_en.value = p.examples_en;
-      f.querySelectorAll('input[type=range][name^=trait_]').forEach(s=>{
-        s.value = s.name in p.traits ? p.traits[s.name] : 50;   // ||50だと値0のプリセットが消える
-        const o = s.closest('.field').querySelector('output');
-        if(o) o.textContent = s.value + '%';
+      f.querySelectorAll('.dynamic-range-field[data-dynamic-key^="trait_"]').forEach(field=>{
+        const value = field.dataset.dynamicKey in p.traits ? p.traits[field.dataset.dynamicKey] : 50;
+        field.querySelector('.dynamic-min-input').value = value;
+        field.querySelector('.dynamic-max-input').value = value;
+        syncDynamicRange(field);
       });
       f.querySelectorAll('input[type=checkbox][name^=rule_]').forEach(c=>{ c.checked = !!p.checks[c.name]; });
       $('savebar').classList.add('on');
@@ -457,9 +533,14 @@ function initPresets(){
 const cfg = $('cfg');
 cfg.addEventListener('input', e=>{
   if(e.target.type === 'range'){
-    const o = e.target.closest('.field').querySelector('output');
-    if(o) o.textContent = e.target.value + '%';
+    const field = e.target.closest('.dynamic-range-field');
+    if(field) syncDynamicRange(field);
+    else {
+      const o = e.target.closest('.field').querySelector('output');
+      if(o) o.textContent = e.target.value + '%';
+    }
   }
+  if(e.target.name === 'dynamic_period_minutes' || e.target.name === 'dynamic_enabled') syncAllDynamicRanges();
   $('savebar').classList.add('on');
 });
 cfg.addEventListener('submit', async e=>{
@@ -564,6 +645,7 @@ async function loadHardware(){
   updateSetupStatus();
 }
 loadBootstrap();
+requestAnimationFrame(animateDynamicPreview);
 loadHardware();
 async function loadF(){
   try{ F = await (await fetch('/friends')).json(); drawF(); }catch(e){}
