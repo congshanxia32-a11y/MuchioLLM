@@ -12,6 +12,8 @@ MAX_SAMPLES_PER_LANG = 64
 
 _profiles = {}
 _mtime = 0.0
+_embed_cache_key = None
+_embed_cache_rows = []
 
 
 def _norm(v):
@@ -94,6 +96,7 @@ def match(vec, threshold, lang=None):
 
 
 def stash(ts, vec, lang="unknown", lang_conf=0.0):
+    global _embed_cache_key
     DATA.mkdir(exist_ok=True)
     with EMBEDS.open("a", encoding="utf-8") as stream:
         stream.write(json.dumps({
@@ -102,11 +105,17 @@ def stash(ts, vec, lang="unknown", lang_conf=0.0):
             "lang": lang,
             "lang_conf": lang_conf,
         }) + "\n")
+    _embed_cache_key = None
 
 
 def _embed_rows():
+    global _embed_cache_key, _embed_cache_rows
     if not EMBEDS.exists():
         return []
+    stat = EMBEDS.stat()
+    cache_key = (stat.st_mtime_ns, stat.st_size)
+    if cache_key == _embed_cache_key:
+        return _embed_cache_rows
     rows = []
     for line in EMBEDS.read_text(encoding="utf-8").splitlines():
         try:
@@ -117,6 +126,8 @@ def _embed_rows():
                 rows.append(row)
         except (json.JSONDecodeError, TypeError):
             continue
+    _embed_cache_key = cache_key
+    _embed_cache_rows = rows
     return rows
 
 
@@ -158,12 +169,16 @@ def add_samples(uid, name, timestamps):
             if existing.get("lang", "unknown") == sample["lang"]
         ]
         if len(same_language) >= MAX_SAMPLES_PER_LANG:
-            new_vec = _norm(sample["v"])
+            def average_similarity(existing):
+                others = [other for other in same_language if other is not existing]
+                return sum(
+                    sum(a * b for a, b in zip(_norm(existing["v"]), _norm(other["v"])))
+                    for other in others
+                ) / len(others)
+
             replacement = max(
                 same_language,
-                key=lambda existing: sum(
-                    a * b for a, b in zip(new_vec, _norm(existing["v"]))
-                ),
+                key=average_similarity,
             )
             profile["samples"].remove(replacement)
         profile["samples"].append(sample)
@@ -190,7 +205,9 @@ def candidates(ts, threshold, lang=None, limit=20):
     target_vec = _norm(target["v"])
     result = []
     for row in _embed_rows():
-        if abs(row["ts"] - ts) < 0.01 or row["ts"] in registered:
+        if (abs(row["ts"] - ts) < 0.01 or
+                any(abs(row["ts"] - timestamp) < 0.01
+                    for timestamp in registered)):
             continue
         if lang is not None and row["lang"] != lang:
             continue
@@ -234,6 +251,7 @@ _dead = False
 
 
 def embed(audio_f32_16k):
+    """16kHz mono float32 → 192次元声紋。speechbrain未導入/失敗はNone(以後休止)"""
     global _encoder, _dead
     if _dead:
         return None
@@ -241,24 +259,22 @@ def embed(audio_f32_16k):
         try:
             import torch
             from speechbrain.inference.speaker import EncoderClassifier
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dev = "cuda" if torch.cuda.is_available() else "cpu"
             _encoder = EncoderClassifier.from_hparams(
                 source="speechbrain/spkrec-ecapa-voxceleb",
-                savedir=str(DATA / "ecapa"),
-                run_opts={"device": device},
-            )
-            print(time.strftime("%H:%M:%S ") + f"encoder ready ({device})", flush=True)
-        except Exception as error:
+                savedir=str(DATA / "ecapa"), run_opts={"device": dev})
+            print(time.strftime("%H:%M:%S ") + f"こえ分類 準備完了 (ecapa/{dev})", flush=True)
+        except Exception as e:
             _dead = True
             print(time.strftime("%H:%M:%S ") +
-                  f"encoder unavailable ({error.__class__.__name__}: {str(error)[:80]})",
-                  flush=True)
+                  f"こえ分類は休止({e.__class__.__name__}: {str(e)[:80]})。"
+                  "pip install speechbrain で有効になります", flush=True)
             return None
     try:
         import torch
         with torch.no_grad():
-            tensor = torch.from_numpy(audio_f32_16k).unsqueeze(0)
-            vector = _encoder.encode_batch(tensor).squeeze()
-        return [float(value) for value in vector]
+            t = torch.from_numpy(audio_f32_16k).unsqueeze(0)
+            v = _encoder.encode_batch(t).squeeze()
+        return [float(x) for x in v]
     except Exception:
         return None

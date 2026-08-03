@@ -82,11 +82,45 @@ def test_observe_persists_language_before_matching():
         tempdir.cleanup()
 
 
+def test_overflow_replaces_most_redundant_existing_sample():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.stash(1.0, [1.0, 0.0], "ja", 0.9)
+        voiceid.stash(2.0, [0.999, 0.0447], "ja", 0.9)
+        voiceid.stash(3.0, [0.0, 1.0], "ja", 0.9)
+        for ts in range(100, 161):
+            voiceid.stash(float(ts), [0.0, 1.0], "ja", 0.9)
+        voiceid.add_samples("u", "A", list(range(1, 4)) + list(range(100, 161)))
+        voiceid.stash(200.0, [0.999, 0.0447], "ja", 0.9)
+        result = voiceid.add_samples("u", "A", [200.0])
+        timestamps = {sample["ts"] for sample in voiceid.load_profiles()["u"]["samples"]}
+        assert result == {"added": 1, "missing": 0, "skipped": 0}
+        assert len(timestamps) == 64
+        assert 2.0 in timestamps
+        assert 3.0 not in timestamps
+    finally:
+        tempdir.cleanup()
+
+
+def test_candidates_excludes_registered_nearby_timestamp():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.stash(1.0, [1.0, 0.0], "ja", 0.9)
+        voiceid.add_sample("u", "A", 1.0)
+        voiceid.stash(1.005, [1.0, 0.0], "ja", 0.9)
+        voiceid.stash(2.0, [0.99, 0.1], "ja", 0.9)
+        assert [row["ts"] for row in voiceid.candidates(2.0, 0.5, "ja")] == []
+    finally:
+        tempdir.cleanup()
+
+
 if __name__ == "__main__":
     for test in (
         test_stash_keeps_language_and_pages_without_trimming,
         test_old_vecs_are_unknown_and_languages_have_independent_capacity,
         test_match_prefers_same_language_and_candidates_are_manual,
         test_observe_persists_language_before_matching,
+        test_overflow_replaces_most_redundant_existing_sample,
+        test_candidates_excludes_registered_nearby_timestamp,
     ):
         test()
