@@ -19,6 +19,11 @@
 1. [VRCFury](https://vrcfury.com/download/) をUnityプロジェクトへ導入する
 2. `MuchioKanjiMod.unitypackage` をUnityプロジェクトへインポートする
 3. アバターを選び、パッチを適用する
+
+Unityのメニューから `Tools → Muchio Kanji Mod → Patcher → Kanji Mod Patcher` を開き、対象アバターを確認して「適用」を押します。
+
+![Kanji Mod Patcherの操作例](images/kanji-mod-patcher.png)
+
 4. アバターを再アップロードする
 5. SteamのVRChat起動オプションへ次を追加する
 
@@ -26,11 +31,35 @@
 --osc=9002:127.0.0.1:9001
 ```
 
+Steamでは、ライブラリでVRChatを右クリックして「プロパティ」を開き、「起動オプション」へ入力します。
+
+![SteamでVRChatのプロパティを開く](images/steam-vrchat-properties.png)
+
+![SteamのVRChat起動オプション](images/steam-vrchat-launch-options.png)
+
 6. MuchioLLMの設定画面で「VRCPetちゅうけい」をONにする
 7. MuchioLLMを再起動する
 8. 「かんじモード」をONにする
 
 VRCXからVRChatを起動する場合は、VRCX側の起動設定にも同じ起動オプションを追加してください。
+
+## VRChatでOSCを有効にする
+
+VRChat内のメニューで、次の順に開いてOSCを有効にします。
+
+1. ラジアルメニューから「Options」を開く
+
+   ![VRChatのOptionsメニュー](images/vrchat-options-menu.png)
+
+2. 「OSC」を開く
+
+   ![VRChatのOSCメニュー](images/vrchat-osc-menu.png)
+
+3. 「Enabled」をONにする
+
+   ![VRChatのOSC Enabled設定](images/vrchat-osc-enabled.png)
+
+起動オプションを変更したあとは、VRChatを再起動してください。VRCXから起動する場合は、SteamではなくVRCX側の起動設定を使います。
 
 ## 元に戻す
 

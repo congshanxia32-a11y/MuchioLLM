@@ -23,6 +23,10 @@ LLMの処理速度はGPUとモデルサイズに左右されます。最初は�
 5. 開いた設定画面 `http://localhost:8787` で、ペットの名前・飼い主の名前を設定する。「あたま(LLM)」カードがGPU・VRAM・RAMからおすすめモデルを出すので、必要ならその場でダウンロードして保存する
 6. VRChat内で **Options → OSC → Enabled** を有効にし、ペットへ話しかける
 
+設定画面の例:
+
+![むちこの設定画面](docs/images/muchio-settings.png)
+
 `setup.bat` と `run.bat` はメモ帳などで保存し直さないでください。文字コードが変わると起動できなくなることがあります。
 
 ## 漢字モードで会話を表示する
@@ -61,6 +65,15 @@ VRCFuryは、漢字モードのパッチ適用に必要です。先にUnityプ�
 アバター改造、VRChatの起動オプション、MuchioLLMの設定は必ずセットで切り替えてください。設定だけを先にONにすると、文字盤が化けたり表示されなくなったりします。VRCXからVRChatを起動する場合は、VRCX側の起動設定にも同じオプションを追加してください。
 
 詳しい戻し方やトラブル例は [かんじモードの詳細](docs/kanji-mode.md) を参照してください。
+
+### VRChatでの表示例
+
+漢字モードを有効にすると、ムチォが漢字かな交じりの返事を文字盤へ表示します。
+
+|  |  |
+|---|---|
+| ![漢字モード表示例1](docs/images/muchiko-kanji-01.png) | ![漢字モード表示例2](docs/images/muchiko-kanji-02.png) |
+| ![漢字モード表示例3](docs/images/muchiko-kanji-03.png) | ![漢字モード表示例4](docs/images/muchiko-kanji-04.png) |
 
 ## Ollamaのモデル管理
 

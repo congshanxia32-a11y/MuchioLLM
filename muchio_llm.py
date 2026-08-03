@@ -1196,6 +1196,53 @@ def _hold_for(s):
 
 # ---------------------------------------------------------------- OSC sender
 _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+_INSTANCE_LOCK = None
+_PROXY_READY = threading.Event()
+_PROXY_FAILED = threading.Event()
+_OSC_BLOCKED = threading.Event()
+
+
+def _acquire_instance_lock():
+    """Allow only one resident MuchioLLM process for this data directory.
+
+    The launcher normally cleans up old processes, but that cleanup is not
+    reliable when a process was started from another shell or Python path.
+    Two readers then consume the same logs and race on the KAT OSC parameters.
+    Keeping the file handle open lets the OS release the lock automatically on
+    process exit.
+    """
+    global _INSTANCE_LOCK
+    DATA.mkdir(exist_ok=True)
+    path = DATA / "muchio_llm.lock"
+    try:
+        handle = open(path, "a+b")
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except (OSError, ImportError):
+        try:
+            handle.close()
+        except UnboundLocalError:
+            pass
+        return False
+    _INSTANCE_LOCK = handle
+    return True
+
+
+def _send_osc(data):
+    """Send KAT OSC unless startup detected an unsafe proxy configuration."""
+    if _OSC_BLOCKED.is_set():
+        return False
+    _sock.sendto(data, OSC_DEST)
+    return True
 
 def _osc(addr, val):
     def pstr(x):
@@ -1227,19 +1274,23 @@ def clear_kat():
     """盤面の全セルを消す(Pointer=255のクリアステート)。
     クリアアニメはMotion Time=CharSync値でサンプリングされるため、
     全CharSync=0.0とセットで送らないと逆に全セルにゴミが塗られる(本家katoscの初期化と同手順)。"""
-    _sock.sendto(_osc("/avatar/parameters/KAT_Pointer", 255), OSC_DEST)
+    if _OSC_BLOCKED.is_set():
+        return
+    _send_osc(_osc("/avatar/parameters/KAT_Pointer", 255))
     for i in range(8):
-        _sock.sendto(_osc(f"/avatar/parameters/KAT_CharSync{i}", 0.0), OSC_DEST)
+        _send_osc(_osc(f"/avatar/parameters/KAT_CharSync{i}", 0.0))
     time.sleep(0.15)   # クリアステートが再生されるのを待ってから次の書き込みへ
 
 def _write_block(block, bts, upto=None):
     """ブロック(8セル)を書く。uptoはセル(バイト)番号で、それ以降は空白。
     毎回ポインタも送るので、遷移待ちによる取りこぼしが起きない。"""
-    _sock.sendto(_osc("/avatar/parameters/KAT_Pointer", block + 1), OSC_DEST)
+    if _OSC_BLOCKED.is_set():
+        return
+    _send_osc(_osc("/avatar/parameters/KAT_Pointer", block + 1))
     for i in range(8):
         idx = block * 8 + i
         b = bts[idx] if (upto is None or idx <= upto) else 0
-        _sock.sendto(_osc(f"/avatar/parameters/KAT_CharSync{i}", _byte_value(b)), OSC_DEST)
+        _send_osc(_osc(f"/avatar/parameters/KAT_CharSync{i}", _byte_value(b)))
 
 def _split_rows(s, nrows, w=32):
     """w字/行に収まる行数に割る。行間はなるべく均等、英語は切れ目付近の空白を優先"""
@@ -1273,9 +1324,11 @@ def _pad_board(text):
 
 def send_kat(text, per_char=0.0):
     """全消去→表示。per_char>0なら1グリフずつタイプするように出す。"""
+    if _OSC_BLOCKED.is_set():
+        return
     board = _pad_board(text)
     bts = _board_bytes(board)
-    _sock.sendto(_osc("/avatar/parameters/KAT_Visible", True), OSC_DEST)
+    _send_osc(_osc("/avatar/parameters/KAT_Visible", True))
     clear_kat()
     if per_char <= 0:
         for block in range(len(bts) // 8):
@@ -1292,7 +1345,9 @@ def send_kat(text, per_char=0.0):
         time.sleep(per_char)
 
 def hide_kat():
-    _sock.sendto(_osc("/avatar/parameters/KAT_Visible", False), OSC_DEST)
+    if _OSC_BLOCKED.is_set():
+        return
+    _send_osc(_osc("/avatar/parameters/KAT_Visible", False))
     clear_kat()
 
 # ------------------------------------------------------------- VRCPet OSCプロキシ
@@ -1357,13 +1412,19 @@ def _proxy_text(st):
 def _proxy_loop():
     """9000で受信→KATは復元して_PROXY_Qへ、他は素通しでOSC_DESTへ。
     ponytail: データグラム単位でKAT/非KATを判定(VRCPetは1メッセージ=1データグラム)"""
+    if _PROXY_READY.is_set() or _PROXY_FAILED.is_set():
+        return
     rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         rx.bind(("127.0.0.1", 9000))
-    except OSError:
-        log("プロキシ: 9000をbindできない(VRChatが起動オプション無しで9000を使用中の可能性)。中継停止")
+    except OSError as e:
+        _PROXY_FAILED.set()
+        _OSC_BLOCKED.set()
+        log("プロキシ: 9000をbindできない(VRChatが起動オプション無しで9000を使用中の可能性)。"
+            f"KAT送信を停止します: {e}")
         return
     rx.settimeout(0.5)
+    _PROXY_READY.set()
     st = {"ptr": 0, "board": [0] * 128, "dirty": False}
     log("プロキシ: 9000で受信開始 (VRChatは --osc=9002:127.0.0.1:9001 で起動)")
     while True:
@@ -1413,11 +1474,13 @@ def _dots_start(base_text, already_shown, hold_check):
     「考えてる」を見せる。全消去はしない(チカチカするため)——点セルの乗る
     ブロックだけ書き換える。hold_check()がTrueのtickは書かない(純正が盤面使用中)"""
     global _dots_thread
+    if _OSC_BLOCKED.is_set():
+        return
     _dots_stop()
     if not already_shown:
         if hold_check():
             return   # 純正が盤面使用中: 今回はアニメなし(相槌の抑止と同じ扱い)
-        _sock.sendto(_osc("/avatar/parameters/KAT_Visible", True), OSC_DEST)
+        _send_osc(_osc("/avatar/parameters/KAT_Visible", True))
         clear_kat()   # 前の返事が残っていると点々が混ざる
     base = _pad_board(base_text)
     start = _dot_start_cell(base)
@@ -3053,6 +3116,10 @@ def start_ui():
 
 # ---------------------------------------------------------------- main loop
 def main():
+    if not _acquire_instance_lock():
+        print("MuchioLLMは既に起動しています。既存プロセスを終了してから再実行してください。",
+              flush=True)
+        return
     log("=== ムチォLLMコンパニオン起動 ===")
     load_cfg()
     start_ui()
@@ -3069,6 +3136,11 @@ def main():
     growth.init(DATA, owner(), to_board_text, logger=log, get_cfg=lambda: CFG)
     vrcx_sense.init(DATA, to_board_text, logger=log, get_cfg=lambda: CFG,
                     get_suffix=db_suffix)
+    if CFG.get("osc_proxy"):
+        threading.Thread(target=_proxy_loop, daemon=True).start()
+        if not _PROXY_READY.wait(timeout=2.0) and not _PROXY_FAILED.is_set():
+            log("プロキシ: 起動確認がタイムアウトしました。KAT送信を停止します")
+            _OSC_BLOCKED.set()
     clear_kat()   # 過去の残骸セルを掃除（表示中でなければ見た目に影響なし）
     tail = Tail()
     others = FileTail(DATA / "others_heard.jsonl")
