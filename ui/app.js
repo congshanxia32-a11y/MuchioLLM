@@ -620,32 +620,101 @@ async function adoptF(uid, btn){
 loadF();
 
 // ---- こえおぼえ ----
-async function loadV(){
-  try{
-    const d = await (await fetch('/voices')).json();
-    document.getElementById('vprof').innerHTML = d.profiles.length
-      ? '<small>おぼえたこえ: ' + d.profiles.map(p=>
-          `${esc(p.name)}×${p.n} <a href="#" onclick="resetV('${esc(p.uid)}');return false" title="この声を忘れる">✕</a>`
-        ).join('、') + '</small>'
-      : '<small>まだ声をおぼえていません。下の発話に名前を付けてください</small>';
-    const opts = F.slice(0,40).map(p=>`<option value="${esc(p.uid)}">${esc(p.nick||p.name)}</option>`).join('');
-    document.getElementById('voices').innerHTML = d.recent.map(r=>
-     `<div class="frow" data-ts="${r.ts}">
+let voiceBefore = null;
+let voiceRows = [];
+let voiceCandidates = {};
+let voiceProfiles = [];
+
+function voiceProfileCount(profile){
+  const counts = profile.n_by_lang;
+  if(counts && typeof counts === 'object'){
+    const labels = ['ja','en','unknown'].filter(lang=>Number(counts[lang]) > 0)
+      .map(lang=>`${lang} ${counts[lang]}`);
+    if(labels.length) return labels.join(' / ');
+  }
+  return profile.n ?? 0;
+}
+function drawV(){
+  document.getElementById('vprof').innerHTML = voiceProfiles.length
+    ? '<small>おぼえたこえ: ' + voiceProfiles.map(p=>
+        `${esc(p.name)}×${voiceProfileCount(p)} <a href="#" onclick="resetV('${esc(p.uid)}');return false" title="この声を忘れる">✕</a>`
+      ).join('、') + '</small>'
+    : '<small>まだ声をおぼえていません。下の発話に名前を付けてください</small>';
+  const opts = F.slice(0,40).map(p=>`<option value="${esc(p.uid)}">${esc(p.nick||p.name)}</option>`).join('');
+  const rows = voiceRows.map(r=>{
+    const candidateSet = voiceCandidates[String(r.ts)];
+    const candidates = candidateSet?.items || [];
+    const candidateRows = candidates.length ? `
+      <div class="voice-candidates" data-source-ts="${r.ts}" data-uid="${esc(candidateSet.uid)}">
+       ${candidates.map(c=>`<div class="frow" data-ts="${c.ts}">
+         <label><input type="checkbox" class="vcandidate" data-ts="${c.ts}"> 確認して登録</label>
+         <span class="fname">${esc(c.text)}</span>
+         <span class="fmeta">${esc(c.lang || 'unknown')} / 類似度 ${Number(c.score || 0).toFixed(2)}</span>
+        </div>`).join('')}
+       <div class="frow"><button type="button" class="ghost" onclick="batchV(this)">チェックした候補を登録</button><span class="fmeta vcandidate-status"></span></div>
+      </div>` : '';
+    return `<div class="frow" data-ts="${r.ts}">
        <span class="fmeta">${new Date(r.ts*1000).toLocaleTimeString()}</span>
        <span class="fname">${esc(r.text)}</span>
        <span class="fmeta">${r.who_name?('→'+esc(r.who_name)):'?'}</span>
+       <span class="fmeta">${esc(r.lang || 'unknown')}</span>
        <select class="fnick vsel"><option value="">だれ?</option>${opts}</select>
        <button type="button" class="ghost" onclick="labelV(this)">おぼえる</button>
-      </div>`).join('') || '<div class="frow">まだ発話がありません</div>';
+      </div>${candidateRows}`;
+  }).join('');
+  document.getElementById('voices').innerHTML = rows || '<div class="frow">まだ発話がありません</div>';
+  if(voiceBefore !== null){
+    document.getElementById('voices').insertAdjacentHTML('beforeend',
+      '<div class="frow"><button type="button" class="ghost" onclick="moreV()">もっと見る</button></div>');
+  }
+}
+async function loadV(reset=true){
+  if(reset){ voiceBefore = null; voiceRows = []; voiceCandidates = {}; }
+  try{
+    const query = new URLSearchParams({limit:'50'});
+    if(!reset && voiceBefore !== null) query.set('before', voiceBefore);
+    const d = await (await fetch('/voices?'+query)).json();
+    const seen = new Set(voiceRows.map(row=>String(row.ts)));
+    voiceRows.push(...(Array.isArray(d.recent) ? d.recent : []).filter(row=>!seen.has(String(row.ts))));
+    voiceBefore = d.next_before ?? null;
+    voiceProfiles = Array.isArray(d.profiles) ? d.profiles : [];
+    drawV();
   }catch(e){}
 }
+function moreV(){ loadV(false); }
 async function labelV(btn){
   const row = btn.closest('.frow');
   const uid = row.querySelector('.vsel').value;
   if(!uid) return;
-  await fetch('/voice',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
-    body:'ts='+row.dataset.ts+'&uid='+encodeURIComponent(uid)});
-  loadV();
+  const result = await fetch('/voice',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
+    body:'ts='+encodeURIComponent(row.dataset.ts)+'&uid='+encodeURIComponent(uid)});
+  const data = await result.json();
+  if(!result.ok || !data.ok) return;
+  await loadV(true);
+  try{
+    const candidates = await (await fetch('/voice_candidates?ts='+encodeURIComponent(row.dataset.ts))).json();
+    if(Array.isArray(candidates.candidates) && candidates.candidates.length){
+      voiceCandidates[String(row.dataset.ts)] = {uid, items:candidates.candidates};
+      drawV();
+    }
+  }catch(e){}
+}
+async function batchV(btn){
+  const group = btn.closest('.voice-candidates');
+  const timestamps = [...group.querySelectorAll('.vcandidate:checked')].map(box=>box.dataset.ts);
+  if(!timestamps.length) return;
+  const body = new URLSearchParams({uid:group.dataset.uid});
+  timestamps.forEach(ts=>body.append('ts', ts));
+  const status = group.querySelector('.vcandidate-status');
+  try{
+    const response = await fetch('/voice_batch',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
+    const result = await response.json();
+    status.textContent = `登録 ${result.added || 0}件 / 未検出 ${result.missing || 0}件 / 済 ${result.skipped || 0}件`;
+    if(!response.ok || !result.ok) return;
+    toast(status.textContent);
+    delete voiceCandidates[group.dataset.sourceTs];
+    await loadV(true);
+  }catch(e){ status.textContent = '登録できませんでした'; }
 }
 async function resetV(uid){
   await fetch('/voice_reset',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},
