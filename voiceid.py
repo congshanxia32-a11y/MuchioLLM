@@ -39,7 +39,9 @@ def _clean_vector(vec):
         return None
     cleaned = []
     for value in vec:
-        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+        if (isinstance(value, bool) or
+                not isinstance(value, (int, float)) or
+                not math.isfinite(float(value))):
             return None
         cleaned.append(float(value))
     return cleaned
@@ -252,7 +254,7 @@ def candidates(ts, threshold, lang=None, limit=20):
         for sample in profile.get("samples", [])
     }
     target_vec = _norm(target["v"])
-    result = []
+    primary, fallback = [], []
     for row in _embed_rows():
         if (abs(row["ts"] - ts) < 0.01 or
                 any(abs(row["ts"] - timestamp) < 0.01
@@ -263,14 +265,20 @@ def candidates(ts, threshold, lang=None, limit=20):
             row_threshold = threshold
         elif row_lang == lang:
             row_threshold = threshold + 0.05 if lang == "unknown" else threshold
+            bucket = primary
         elif lang in ("ja", "en") and row_lang == "unknown":
             row_threshold = threshold + 0.05
+            bucket = fallback
         else:
             continue
+        if lang is None:
+            bucket = primary
         score = sum(a * b for a, b in zip(target_vec, _norm(row["v"])))
         if score >= row_threshold:
-            result.append({**row, "score": score})
-    return sorted(result, key=lambda row: row["score"], reverse=True)[:limit]
+            bucket.append({**row, "score": score})
+    result = (sorted(primary, key=lambda row: row["score"], reverse=True) +
+              sorted(fallback, key=lambda row: row["score"], reverse=True))
+    return result[:limit]
 
 
 def observe(ts, vec, lang, lang_conf, threshold):

@@ -129,3 +129,86 @@ Observed results:
 - Unknown-language fallbacks are stricter than same-language matches.
 - The `/voice_candidates` limit clamp was already `1..100`; only `/voices` needed adjustment.
 - Concern: `git diff --check` reports CRLF-normalization warnings for modified files, but exits 0 and reports no whitespace errors.
+
+---
+
+# Voice-memory scoped re-review fix round 2 report
+
+## Scope
+
+Worked in:
+
+`W:\UnityProjects\Sanatia\MuchioLLM_dist\MuchioLLM\.worktrees\voice-memory`
+
+Scoped re-review required two Important fixes:
+
+1. `voiceid.candidates()` must prioritize same-language candidates ahead of legacy `unknown` fallback candidates for known requested languages, even when the fallback has a higher raw score. The unknown fallback threshold remains stricter.
+2. `voiceid._embed_rows()` must reject JSON booleans in vectors, since Python treats `bool` as an `int`.
+
+## Regression tests added first
+
+- `test_language_candidates_prioritize_same_language_before_unknown_fallback`
+  - Break caught: `voiceid.candidates(..., lang="ja")` must return a `ja` candidate scoring about `0.90` before an `unknown` fallback candidate scoring about `0.99`.
+- `test_boolean_vector_elements_are_malformed`
+  - Break caught: an embed row with `v=[true,false]` must be skipped as malformed vector data.
+
+## RED evidence
+
+Commands run before production fixes:
+
+```text
+python -c "import test_voiceid; test_voiceid.test_language_candidates_prioritize_same_language_before_unknown_fallback()"
+```
+
+Result: exit 1:
+
+```text
+AssertionError
+```
+
+```text
+python -c "import test_voiceid; test_voiceid.test_boolean_vector_elements_are_malformed()"
+```
+
+Result: exit 1:
+
+```text
+AssertionError
+```
+
+## Fixes implemented
+
+- `voiceid.candidates`
+  - Splits same-language/primary rows and `unknown` fallback rows into separate buckets.
+  - Sorts each bucket by score descending.
+  - Concatenates primary rows before fallback rows before applying `limit`.
+  - Keeps the `threshold + 0.05` stricter fallback threshold for legacy `unknown` rows.
+- `voiceid._clean_vector`
+  - Rejects `bool` elements before accepting `int`/`float` values.
+
+## GREEN / full verification evidence
+
+Focused GREEN checks:
+
+- `python -c "import test_voiceid; test_voiceid.test_language_candidates_prioritize_same_language_before_unknown_fallback()"`: exit 0
+- `python -c "import test_voiceid; test_voiceid.test_boolean_vector_elements_are_malformed()"`: exit 0
+- `python test_voiceid.py`: exit 0
+
+Full prior verification list was rerun after this report append:
+
+- `python test_voiceid.py`: exit 0
+- `python test_muchio.py`: exit 0, printed usual model-substitution logs and `ok`
+- `python test_muchio_relay.py`: exit 0, printed `ok`
+- `python test_peer_idle.py`: exit 0, printed `ok`
+- `python test_social_context.py`: exit 0, printed `ok`
+- `python test_ui_config.py`: exit 0, printed `ok`
+- `python -m py_compile voiceid.py vrc_listener.py muchio_llm.py test_voiceid.py`: exit 0
+- `node --check ui/app.js`: exit 0
+- `git diff --check`: exit 0; emitted only Git line-ending warnings for modified files.
+
+## Self-review
+
+- Diff is limited to `voiceid.py`, `test_voiceid.py`, and this report.
+- The candidate priority change applies only to known-language requests with legacy `unknown` fallback rows; unknown fallback threshold remains stricter.
+- Bool vector rejection is limited to embedding-row validation and preserves existing malformed-line tolerance.
+- Concern: the user-provided outside-worktree report path did not exist when checked; this evidence was appended to the existing committed report inside the worktree.

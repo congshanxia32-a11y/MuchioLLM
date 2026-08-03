@@ -107,6 +107,24 @@ def test_language_candidates_include_legacy_unknown_rows_as_fallback():
         tempdir.cleanup()
 
 
+def test_language_candidates_prioritize_same_language_before_unknown_fallback():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.EMBEDS.write_text(
+            '{"ts": 3.0, "v": [1.0, 0.0], "lang": "ja", "lang_conf": 0.9}\n'
+            '{"ts": 2.0, "v": [0.99, 0.141067]}\n'
+            '{"ts": 1.0, "v": [0.9, 0.43589], "lang": "ja", "lang_conf": 0.9}\n',
+            encoding="utf-8",
+        )
+        result = voiceid.candidates(3.0, threshold=0.8, lang="ja", limit=5)
+        assert [(row["ts"], row["lang"]) for row in result] == [
+            (1.0, "ja"),
+            (2.0, "unknown"),
+        ]
+    finally:
+        tempdir.cleanup()
+
+
 def test_malformed_embed_rows_are_skipped():
     tempdir = _isolated_voiceid()
     try:
@@ -121,6 +139,19 @@ def test_malformed_embed_rows_are_skipped():
         assert [(row["ts"], row["lang"]) for row in page["items"]] == [
             (2.0, "unknown"),
         ]
+    finally:
+        tempdir.cleanup()
+
+
+def test_boolean_vector_elements_are_malformed():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.EMBEDS.write_text(
+            '{"ts": 2.0, "v": [true, false], "lang": "ja", "lang_conf": 0.9}\n'
+            '{"ts": 1.0, "v": [1.0, 0.0], "lang": "ja", "lang_conf": 0.9}\n',
+            encoding="utf-8",
+        )
+        assert [row["ts"] for row in voiceid.pending(limit=10)["items"]] == [1.0]
     finally:
         tempdir.cleanup()
 
@@ -176,7 +207,9 @@ if __name__ == "__main__":
         test_match_prefers_same_language_and_candidates_are_manual,
         test_known_language_match_keeps_legacy_unknown_profile_fallback,
         test_language_candidates_include_legacy_unknown_rows_as_fallback,
+        test_language_candidates_prioritize_same_language_before_unknown_fallback,
         test_malformed_embed_rows_are_skipped,
+        test_boolean_vector_elements_are_malformed,
         test_observe_persists_language_before_matching,
         test_overflow_replaces_most_redundant_existing_sample,
         test_candidates_excludes_registered_nearby_timestamp,
