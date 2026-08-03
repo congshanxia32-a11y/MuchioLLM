@@ -139,7 +139,7 @@ git commit -m "feat: expand voice profile storage"
 - Modify: `vrc_listener.py:233-237`
 
 **Interfaces:**
-- Consumes: Task 1 の `stash(ts, vec, lang, lang_conf)` と `match(vec, threshold, lang)`。
+- Consumes: Task 1 の `observe(ts, vec, lang, lang_conf, threshold)`。
 - Produces: フレンド発話の保存・即時照合が Whisper の `lang` と `conf` を使う動作。
 
 - [ ] **Step 1: `vrc_listener.py` の声紋呼び出しを変更する**
