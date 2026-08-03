@@ -233,8 +233,7 @@ def main():
             if not mic_mode:   # 声紋: だれの声か(飼い主のマイクは既知なので不要)
                 vec = voiceid.embed(audio)
                 if vec:
-                    voiceid.stash(entry["ts"], vec)   # あとからUIでラベル付けできるよう保存
-                    hit = voiceid.match(vec, v_thresh)
+                    hit = voiceid.observe(entry["ts"], vec, lang, conf, v_thresh)
                     if hit:
                         entry["who"], entry["who_name"] = hit[0], hit[1]
                         tag = f"[{hit[1]}:{hit[2]:.2f}]"
