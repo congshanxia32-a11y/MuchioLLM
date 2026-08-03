@@ -634,6 +634,14 @@ function voiceProfileCount(profile){
   }
   return profile.n ?? 0;
 }
+function appendUniqueVoiceRows(target, rows, seen=new Set(target.map(row=>String(row.ts)))){
+  (Array.isArray(rows) ? rows : []).forEach(row=>{
+    const timestamp = String(row.ts);
+    if(seen.has(timestamp)) return;
+    seen.add(timestamp);
+    target.push(row);
+  });
+}
 function drawV(){
   document.getElementById('vprof').innerHTML = voiceProfiles.length
     ? '<small>おぼえたこえ: ' + voiceProfiles.map(p=>
@@ -675,13 +683,25 @@ async function loadV(reset=true){
     if(!reset && voiceBefore !== null) query.set('before', voiceBefore);
     const d = await (await fetch('/voices?'+query)).json();
     const seen = new Set(voiceRows.map(row=>String(row.ts)));
-    voiceRows.push(...(Array.isArray(d.recent) ? d.recent : []).filter(row=>!seen.has(String(row.ts))));
+    appendUniqueVoiceRows(voiceRows, d.recent, seen);
     voiceBefore = d.next_before ?? null;
     voiceProfiles = Array.isArray(d.profiles) ? d.profiles : [];
     drawV();
   }catch(e){}
 }
 function moreV(){ loadV(false); }
+async function refreshV(){
+  try{
+    const d = await (await fetch('/voices?limit=50')).json();
+    const rows = [];
+    const seen = new Set();
+    appendUniqueVoiceRows(rows, d.recent, seen);
+    appendUniqueVoiceRows(rows, voiceRows, seen);
+    voiceRows = rows;
+    voiceProfiles = Array.isArray(d.profiles) ? d.profiles : [];
+    drawV();
+  }catch(e){}
+}
 async function labelV(btn){
   const row = btn.closest('.frow');
   const uid = row.querySelector('.vsel').value;
@@ -690,14 +710,14 @@ async function labelV(btn){
     body:'ts='+encodeURIComponent(row.dataset.ts)+'&uid='+encodeURIComponent(uid)});
   const data = await result.json();
   if(!result.ok || !data.ok) return;
-  await loadV(true);
   try{
     const candidates = await (await fetch('/voice_candidates?ts='+encodeURIComponent(row.dataset.ts))).json();
     if(Array.isArray(candidates.candidates) && candidates.candidates.length){
       voiceCandidates[String(row.dataset.ts)] = {uid, items:candidates.candidates};
-      drawV();
     }
   }catch(e){}
+  await refreshV();
+  drawV();
 }
 async function batchV(btn){
   const group = btn.closest('.voice-candidates');
@@ -713,7 +733,7 @@ async function batchV(btn){
     if(!response.ok || !result.ok) return;
     toast(status.textContent);
     delete voiceCandidates[group.dataset.sourceTs];
-    await loadV(true);
+    await refreshV();
   }catch(e){ status.textContent = '登録できませんでした'; }
 }
 async function resetV(uid){
@@ -721,7 +741,7 @@ async function resetV(uid){
     body:'uid='+encodeURIComponent(uid)});
   loadV();
 }
-setInterval(loadV, 5000); setTimeout(loadV, 300);
+setInterval(refreshV, 5000); setTimeout(()=>loadV(true), 300);
 
 // ---- 記憶ぜんぶ ----
 let MT = 0;
