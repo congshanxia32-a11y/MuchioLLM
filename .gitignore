@@ -8,6 +8,8 @@ __pycache__/vrcx_sense.cpython-310.pyc
 data/
 .worktrees/
 .superpowers/
+.playwright-cli/
+output/playwright/
 
 config.json
 
