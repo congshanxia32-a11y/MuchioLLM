@@ -142,6 +142,28 @@
 <small>フォントの見た目幅が違うので別に調整できます</small></div>
 </section>
 
+<section class="card wide section-page" data-section="audio" id="unitypackage-info"><h2>アバター用UnityPackage</h2>
+<p class="desc">Unityプロジェクトへ追加するパッケージ。必要なものだけ使ってね。どちらも適用後はアバターの再アップロードが必要です</p>
+<div class="package-entry">
+<h3>MuchioKanjiMod.unitypackage</h3>
+<p class="desc">Muchio/KATの文字盤へ漢字かな交じり文を表示するための改造セットです。</p>
+<ul>
+<li><b>必要:</b> VRCFury、PC向けのMuchioアバター</li>
+<li><b>Unityメニュー:</b> <code>Tools &gt; Muchio Kanji Mod &gt; Patcher</code></li>
+<li><b>導入後:</b> パッチ適用 → アバター再アップロード → VRChat起動オプションとMuchioLLMの「かんじモード」を設定</li>
+</ul>
+</div>
+<div class="package-entry">
+<h3>MaterialCurveBindingRepairer-20260804.unitypackage</h3>
+<p class="desc">アニメーションのタイポ <code>material._Char035</code> を <code>material._Char35</code> に直し、「ふ」「ぐ」などの文字化けを修正するEditor拡張です。</p>
+<ul>
+<li><b>必要:</b> Unity 2022.3。Muchio/KATアセットに依存しません</li>
+<li><b>Unityメニュー:</b> <code>Tools &gt; Muchio &gt; Material Curve Binding Repairer</code></li>
+<li><b>使い方:</b> Scan Projectで確認 → Fix Found Clipsで修正 → アバター再アップロード</li>
+</ul>
+</div>
+</section>
+
 <section class="card section-page" data-section="llm" id="llm-settings"><h2>あたま(LLM)</h2>
 <p class="desc">かんがえるモデルとことばの切り替え</p>
 <div class="hardware-box" id="hardware">

@@ -78,6 +78,25 @@ VRCFuryは、漢字モードのパッチ適用に必要です。先にUnityプ�
 
 詳しい戻し方やトラブル例は [かんじモードの詳細](docs/kanji-mode.md) を参照してください。
 
+## UnityPackage一覧
+
+### MuchioKanjiMod.unitypackage
+
+Muchio/KATの文字盤へ漢字かな交じり文を表示するための改造セットです。
+
+- VRCFuryとPC向けのMuchioアバターが必要です
+- Unityの `Tools > Muchio Kanji Mod > Patcher` から適用します
+- パッチ適用後、アバターを再アップロードしてから、VRChatの起動オプションとMuchioLLMの「かんじモード」を設定します
+
+### MaterialCurveBindingRepairer-20260804.unitypackage
+
+アニメーションのタイポを修正するEditor拡張です。`material._Char035` を `material._Char35` に変更し、「ふ」「ぐ」などの文字化けを直します。
+
+- Unity 2022.3向けです
+- `Tools > Muchio > Material Curve Binding Repairer` からScan Projectを実行し、対象を確認してからFix Found Clipsを押します
+- Muchio/KATアセットには依存しません
+- 修正後はアバターを再アップロードしてください
+
 ### VRChatでの表示例
 
 漢字モードを有効にすると、ムチォが漢字かな交じりの返事を文字盤へ表示します。
