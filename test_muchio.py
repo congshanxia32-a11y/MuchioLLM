@@ -668,6 +668,43 @@ try:
     page = m._voice_page(limit=2)
     assert [item["ts"] for item in page["recent"]] == [3.0, 1.0], page
     assert page["next_before"] is None, page
+
+    # Paging may scan past embedding rows with no transcript, but must stop once
+    # it has the extra valid transcript row that proves another page exists.
+    (_voice_td / "others_heard.jsonl").write_text(
+        '{"ts": 10.0, "text": "first", "who_name": "Friend A", "lang": "en"}\n'
+        '{"ts": 8.0, "text": "second", "who_name": "Friend B", "lang": "en"}\n'
+        '{"ts": 7.0, "text": "extra", "who_name": "Friend C", "lang": "en"}\n'
+        '{"ts": 6.0, "text": "too old", "who_name": "Friend D", "lang": "en"}\n',
+        encoding="utf-8")
+    _voice_pending_bak = m.voiceid.pending
+    _voice_pending_calls = []
+
+    def _fake_pending(limit=50, before=None):
+        _voice_pending_calls.append((limit, before))
+        if before is None:
+            return {"items": [
+                {"ts": 10.0, "v": [1.0, 0.0], "lang": "en"},
+                {"ts": 9.0, "v": [1.0, 0.0], "lang": "en"},
+            ], "next_before": 9.0}
+        if before == 9.0:
+            return {"items": [
+                {"ts": 8.0, "v": [1.0, 0.0], "lang": "en"},
+                {"ts": 7.0, "v": [1.0, 0.0], "lang": "en"},
+            ], "next_before": 7.0}
+        return {"items": [
+            {"ts": 6.0, "v": [1.0, 0.0], "lang": "en"},
+        ], "next_before": None}
+
+    try:
+        m.voiceid.pending = _fake_pending
+        page = m._voice_page(limit=2)
+    finally:
+        m.voiceid.pending = _voice_pending_bak
+    assert [item["ts"] for item in page["recent"]] == [10.0, 8.0], page
+    assert page["next_before"] == 8.0, page
+    assert _voice_pending_calls == [(2, None), (2, 9.0)], _voice_pending_calls
+
     (_voice_td / "others_heard.jsonl").write_text(
         '{"ts": 3.0, "text": "latest", "who_name": "Friend A", "lang": "en"}\n'
         '{"ts": 2.0, "text": "middle", "who_name": "Friend B", "lang": "en"}\n'
@@ -694,6 +731,9 @@ try:
         with _urlrequest.urlopen(_voice_base + "/voices?limit=999") as _response:
             _voice_http_page = _json.load(_response)
         assert len(_voice_http_page["recent"]) <= 100, _voice_http_page
+        with _urlrequest.urlopen(_voice_base + "/voices?limit=1") as _response:
+            _voice_http_page = _json.load(_response)
+        assert [item["ts"] for item in _voice_http_page["recent"]] == [3.0], _voice_http_page
         try:
             _urlrequest.urlopen(_voice_base + "/voice_candidates?ts=bad")
             raise AssertionError("invalid candidate timestamp must return HTTP 400")

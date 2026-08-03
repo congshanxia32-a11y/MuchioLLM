@@ -27,6 +27,35 @@ def _norm(v):
     return [x / n for x in v]
 
 
+def _clean_lang(lang):
+    if not isinstance(lang, str):
+        return "unknown"
+    lang = lang.strip().lower()
+    return lang or "unknown"
+
+
+def _clean_vector(vec):
+    if not isinstance(vec, list) or not vec:
+        return None
+    cleaned = []
+    for value in vec:
+        if not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+            return None
+        cleaned.append(float(value))
+    return cleaned
+
+
+def _sample_score(vec, samples):
+    scores = sorted(
+        (sum(a * b for a, b in zip(vec, _norm(sample["v"])))
+         for sample in samples),
+        reverse=True,
+    )
+    if not scores:
+        return None
+    return sum(scores[:3]) / min(3, len(scores)) if len(scores) >= 3 else scores[0]
+
+
 def load_profiles():
     global _profiles, _mtime
     try:
@@ -65,39 +94,38 @@ def _save_profiles():
 
 def match(vec, threshold, lang=None):
     vec = _norm(vec)
+    lang = _clean_lang(lang) if lang is not None else None
     profiles = load_profiles()
-    has_same_language = (
-        lang is not None and lang != "unknown" and any(
-            any(sample.get("lang", "unknown") == lang
-                for sample in profile.get("samples", []))
-            for profile in profiles.values()
-        )
-    )
-    scored = []
+    primary, fallback = [], []
     for uid, profile in profiles.items():
         samples = profile.get("samples", [])
         same_language = [
             sample for sample in samples
-            if lang is not None and sample.get("lang", "unknown") == lang
+            if lang is not None and _clean_lang(sample.get("lang", "unknown")) == lang
         ]
-        if has_same_language and not same_language:
-            continue
-        selected = same_language or samples
-        scores = sorted(
-            (sum(a * b for a, b in zip(vec, _norm(sample["v"])))
-             for sample in selected),
-            reverse=True,
-        )
-        if scores:
-            score = (sum(scores[:3]) / min(3, len(scores))
-                     if len(scores) >= 3 else scores[0])
-            scored.append((score, uid))
+        if lang is not None and lang not in ("unknown",):
+            selected = same_language
+            bucket = primary
+            if not selected:
+                selected = [
+                    sample for sample in samples
+                    if _clean_lang(sample.get("lang", "unknown")) == "unknown"
+                ]
+                bucket = fallback
+        else:
+            selected = same_language or samples
+            bucket = primary
+        score = _sample_score(vec, selected)
+        if score is not None:
+            bucket.append((score, uid))
+    primary_threshold = threshold + 0.05 if lang == "unknown" else threshold
+    scored = [item for item in primary if item[0] >= primary_threshold]
+    if not scored:
+        fallback_threshold = threshold + 0.05 if lang is not None else threshold
+        scored = [item for item in fallback if item[0] >= fallback_threshold]
     if not scored:
         return None
     score, uid = max(scored)
-    required = threshold + 0.05 if lang == "unknown" else threshold
-    if score < required:
-        return None
     return uid, profiles[uid]["name"], score
 
 
@@ -127,10 +155,24 @@ def _embed_rows():
         try:
             row = json.loads(line)
             if "ts" in row and "v" in row:
-                row.setdefault("lang", "unknown")
-                row.setdefault("lang_conf", 0.0)
-                rows.append(row)
-        except (json.JSONDecodeError, TypeError):
+                ts = float(row["ts"])
+                vec = _clean_vector(row["v"])
+                if not math.isfinite(ts) or vec is None:
+                    continue
+                try:
+                    lang_conf = float(row.get("lang_conf", 0.0))
+                except (TypeError, ValueError):
+                    lang_conf = 0.0
+                if not math.isfinite(lang_conf):
+                    lang_conf = 0.0
+                rows.append({
+                    **row,
+                    "ts": ts,
+                    "v": vec,
+                    "lang": _clean_lang(row.get("lang", "unknown")),
+                    "lang_conf": lang_conf,
+                })
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             continue
     _embed_cache_key = cache_key
     _embed_cache_rows = rows
@@ -203,6 +245,7 @@ def candidates(ts, threshold, lang=None, limit=20):
     target = _find_embed(ts)
     if target is None:
         return []
+    lang = _clean_lang(lang) if lang is not None else None
     registered = {
         sample.get("ts")
         for profile in load_profiles().values()
@@ -215,10 +258,17 @@ def candidates(ts, threshold, lang=None, limit=20):
                 any(abs(row["ts"] - timestamp) < 0.01
                     for timestamp in registered)):
             continue
-        if lang is not None and row["lang"] != lang:
+        row_lang = _clean_lang(row.get("lang", "unknown"))
+        if lang is None:
+            row_threshold = threshold
+        elif row_lang == lang:
+            row_threshold = threshold + 0.05 if lang == "unknown" else threshold
+        elif lang in ("ja", "en") and row_lang == "unknown":
+            row_threshold = threshold + 0.05
+        else:
             continue
         score = sum(a * b for a, b in zip(target_vec, _norm(row["v"])))
-        if score >= threshold:
+        if score >= row_threshold:
             result.append({**row, "score": score})
     return sorted(result, key=lambda row: row["score"], reverse=True)[:limit]
 

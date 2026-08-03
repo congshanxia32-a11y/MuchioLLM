@@ -13,6 +13,8 @@ def _isolated_voiceid():
     voiceid.EMBEDS = root / "embeds.jsonl"
     voiceid._profiles = {}
     voiceid._mtime = 0.0
+    voiceid._embed_cache_key = None
+    voiceid._embed_cache_rows = []
     return tempdir
 
 
@@ -70,6 +72,59 @@ def test_match_prefers_same_language_and_candidates_are_manual():
         tempdir.cleanup()
 
 
+def test_known_language_match_keeps_legacy_unknown_profile_fallback():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.VOICES.write_text(
+            json.dumps({
+                "legacy": {"name": "Legacy", "vecs": [[1.0, 0.0]]},
+                "ja-user": {
+                    "name": "Japanese",
+                    "samples": [{"lang": "ja", "ts": 1.0, "v": [0.0, 1.0]}],
+                },
+            }),
+            encoding="utf-8",
+        )
+        hit = voiceid.match([1.0, 0.0], 0.9, lang="ja")
+        assert hit is not None
+        assert hit[0] == "legacy"
+    finally:
+        tempdir.cleanup()
+
+
+def test_language_candidates_include_legacy_unknown_rows_as_fallback():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.EMBEDS.write_text(
+            '{"ts": 3.0, "v": [1.0, 0.0], "lang": "ja", "lang_conf": 0.9}\n'
+            '{"ts": 2.0, "v": [0.99, 0.1]}\n'
+            '{"ts": 1.0, "v": [0.0, 1.0], "lang": "en", "lang_conf": 0.9}\n',
+            encoding="utf-8",
+        )
+        result = voiceid.candidates(3.0, threshold=0.8, lang="ja", limit=5)
+        assert [(row["ts"], row["lang"]) for row in result] == [(2.0, "unknown")]
+    finally:
+        tempdir.cleanup()
+
+
+def test_malformed_embed_rows_are_skipped():
+    tempdir = _isolated_voiceid()
+    try:
+        voiceid.EMBEDS.write_text(
+            '{"ts": 4.0, "v": []}\n'
+            '{"ts": 3.0, "v": [1.0, "bad"]}\n'
+            '{"ts": 2.0, "v": [1.0, 0.0], "lang": "", "lang_conf": 0.9}\n'
+            '{"ts": NaN, "v": [1.0, 0.0]}\n',
+            encoding="utf-8",
+        )
+        page = voiceid.pending(limit=10)
+        assert [(row["ts"], row["lang"]) for row in page["items"]] == [
+            (2.0, "unknown"),
+        ]
+    finally:
+        tempdir.cleanup()
+
+
 def test_observe_persists_language_before_matching():
     tempdir = _isolated_voiceid()
     try:
@@ -119,6 +174,9 @@ if __name__ == "__main__":
         test_stash_keeps_language_and_pages_without_trimming,
         test_old_vecs_are_unknown_and_languages_have_independent_capacity,
         test_match_prefers_same_language_and_candidates_are_manual,
+        test_known_language_match_keeps_legacy_unknown_profile_fallback,
+        test_language_candidates_include_legacy_unknown_rows_as_fallback,
+        test_malformed_embed_rows_are_skipped,
         test_observe_persists_language_before_matching,
         test_overflow_replaces_most_redundant_existing_sample,
         test_candidates_excludes_registered_nearby_timestamp,

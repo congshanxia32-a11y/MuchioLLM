@@ -2835,8 +2835,10 @@ def _voice_heard_by_ts():
 def _voice_page(limit=50, before=None):
     heard = _voice_heard_by_ts()
     recent, cursor = [], before
-    while True:
+    while len(recent) <= limit:
         pending = voiceid.pending(limit=limit, before=cursor)
+        if not pending["items"]:
+            break
         for row in pending["items"]:
             entry = heard.get(row["ts"])
             if entry is None or "text" not in entry:
@@ -2844,6 +2846,8 @@ def _voice_page(limit=50, before=None):
             recent.append({"ts": row["ts"], "text": entry["text"],
                            "who_name": entry.get("who_name", ""),
                            "lang": entry.get("lang", row.get("lang", "unknown"))})
+            if len(recent) > limit:
+                break
         if pending["next_before"] is None:
             break
         cursor = pending["next_before"]
@@ -2964,7 +2968,7 @@ class _UIHandler(BaseHTTPRequestHandler):
         if path == "/voices":   # こえおぼえ: 直近のフレンド発話 + 声紋プロフィール要約
             q = parse_qs(query)
             try:
-                limit = min(100, max(20, int(q.get("limit", ["50"])[0])))
+                limit = min(100, max(1, int(q.get("limit", ["50"])[0])))
             except ValueError:
                 limit = 50
             try:
