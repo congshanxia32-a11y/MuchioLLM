@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-import json
-import math
-import os
-import time
+# -*- coding: utf-8 -*-
+"""声紋(speaker embedding)の共通部品 — リスナー(埋め込み計算)とデーモンUI(ラベル付け)の両方から使う。
+
+- data/voices.json  : 人ごとの声紋プロフィール {uid: {name, vecs:[[192]..max8]}}
+- data/embeds.jsonl : リスナーが全発話の埋め込みをtsキーでstash(ラベル付け用)
+torchはembed()内で遅延import。speechbrain未導入でもこのモジュール自体は読める。
+
+python voiceid.py で自己チェック(合成ベクトル、モデル不要)。
+"""
+import json, math, os, time
 from pathlib import Path
 
 DATA = Path(__file__).parent / "data"
@@ -278,3 +284,32 @@ def embed(audio_f32_16k):
         return [float(x) for x in v]
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------- 自己チェック
+if __name__ == "__main__":
+    import sys, tempfile
+    sys.stdout.reconfigure(encoding="utf-8")
+    # 実データを触らないよう一時dirへ
+    _d = Path(tempfile.mkdtemp())
+    VOICES, EMBEDS = _d / "voices.json", _d / "embeds.jsonl"
+    DATA = _d
+
+    assert match([1.0, 0.0], 0.5) is None, "空プロフィールでNoneにならない"
+    stash(100.0, [1.0, 0.0])
+    stash(200.0, [0.0, 1.0])
+    assert add_sample("usr_a", "poyo", 100.0)
+    assert not add_sample("usr_a", "poyo", 999.0), "無いtsで成功扱い"
+    got = match([0.9, 0.1], 0.55)
+    assert got and got[0] == "usr_a" and got[2] > 0.9, got
+    assert match([0.0, 1.0], 0.55) is None, "直交ベクトルが一致扱い"
+    assert add_sample("usr_b", "れお", 200.0)
+    assert match([0.1, 0.95], 0.55)[1] == "れお"
+    # 新しい言語別上限ではunknownサンプルを64件まで保持
+    for i in range(12):
+        stash(300.0 + i, [1.0, float(i) * 0.01])
+        add_sample("usr_a", "poyo", 300.0 + i)
+    assert len(load_profiles()["usr_a"]["samples"]) == 13
+    assert reset("usr_a") and not reset("usr_a")
+    assert match([1.0, 0.0], 0.5) is None or match([1.0, 0.0], 0.5)[0] != "usr_a"
+    print("ok")
