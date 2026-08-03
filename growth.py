@@ -4,7 +4,7 @@
 
 python growth.py で自己チェック(VRCX DBを読んで在室フレンド表示 + assert数個)。
 """
-import calendar, json, os, sqlite3, threading, time
+import calendar, json, os, sqlite3, threading, time, unicodedata
 from pathlib import Path
 
 VRCX_DB = Path(os.environ.get("APPDATA", "")) / "VRCX" / "VRCX.sqlite3"
@@ -385,6 +385,67 @@ def poke_names():
             out.append(p.get("nick") or p["name"])
     return sorted(out)
 
+
+
+SOCIAL_NAME_MAX = 24
+SOCIAL_NAME_LIMIT = 5
+
+
+def _social_name(value):
+    """Return a safe, displayable name for the local LLM context."""
+    raw = str(value or "").strip()
+    if not raw or len(raw) > SOCIAL_NAME_MAX:
+        return ""
+    if any(unicodedata.category(ch).startswith("C") for ch in raw):
+        return ""
+    return raw
+
+
+def social_context(en=False, max_names=SOCIAL_NAME_LIMIT):
+    """Build compact local owner/friend context without exposing user IDs."""
+    if _dead:
+        return ""
+    names = []
+    seen = set()
+    try:
+        limit = min(SOCIAL_NAME_LIMIT, max(0, int(max_names)))
+    except (TypeError, ValueError):
+        limit = SOCIAL_NAME_LIMIT
+    for uid in sorted(_present):
+        p = _state.get("people", {}).get(uid)
+        if not p:
+            continue
+        name = _social_name(p.get("nick") or p.get("name"))
+        if not name or name.casefold() in seen:
+            continue
+        if _board:
+            board_name = _board(name)
+            if not board_name or len(board_name) * 2 < len(name):
+                continue
+        seen.add(name.casefold())
+        names.append(name)
+        if len(names) >= limit:
+            break
+
+    owner_name = _social_name(_owner)
+    if en:
+        parts = ([f"Owner: {owner_name}."] if owner_name else [])
+        if names:
+            parts.append("Friends here now: " + ", ".join(names) + ".")
+        b = bond()
+        relation = "very attached" if b >= 25 else ("still getting close" if b < 5 else "friendly")
+        if owner_name:
+            parts.append(f"Relationship with owner: {relation}.")
+        return " ".join(parts)
+
+    parts = ([f"\u4e3b\u4eba\uff1a{owner_name}\u3002"] if owner_name else [])
+    if names:
+        parts.append("\u3044\u307e\u8fd1\u304f\u306b\u3044\u308b\u53cb\u9054\uff1a" + "\u3001".join(names) + "\u3002")
+    b = bond()
+    relation = "\u304b\u306a\u308a\u89aa\u3057\u3044" if b >= 25 else ("\u307e\u3060\u5c11\u3057\u8ddd\u96e2\u304c\u3042\u308b" if b < 5 else "\u89aa\u3057\u3044")
+    if owner_name:
+        parts.append(f"\u4e3b\u4eba\u3068\u306e\u95a2\u4fc2\uff1a{relation}\u3002")
+    return "".join(parts)
 
 def remove(uid):
     """人の記録を削除。手動登録(manual)なら登録自体を解除=以後いない人あつかい。

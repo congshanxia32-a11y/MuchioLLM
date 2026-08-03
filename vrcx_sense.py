@@ -379,6 +379,18 @@ def prompt_lines(en=False):
     return out
 
 
+
+def world_context(en=False):
+    """Return the current world name for the local LLM, without world IDs."""
+    if _dead or not _world:
+        return ""
+    name = str(_world.get("name") or "").strip()
+    if not name or len(name) > 64:
+        return ""
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
+        return ""
+    return f"Current world: {name}" if en else f"いまのワールド：{name}"
+
 def status_line():
     """設定UIの/status用。プレーンテキスト"""
     parts = []

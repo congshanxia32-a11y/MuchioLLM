@@ -8,6 +8,8 @@ faster-whisper
 # word list in the settings UI is empty; both are small)
 pykakasi
 janome
+# optional peer-chat relay; MuchioLLM still runs with peer chat OFF if absent
+supabase
 
 # optional (setup.bat asks):
 #   speechbrain + torch                     ... speaker id by voice. several GB

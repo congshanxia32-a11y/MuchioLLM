@@ -27,6 +27,9 @@ main{max-width:1100px;margin:0 auto;padding:16px 20px 110px}
 .update-state.good{color:var(--ok)}
 .update-state.warn{color:#ffd38a}
 .update-state.err{color:#ffd7dd}
+.status-note{font-size:.82em;color:var(--dim);margin:10px 0 4px;word-break:break-word}
+.status-note.good{color:var(--ok)}
+.status-note.err{color:#ffd7dd}
 .update-actions{display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;flex-shrink:0}
 .update-actions button{white-space:nowrap}
 button:disabled{opacity:.45;cursor:not-allowed;filter:none}
@@ -34,6 +37,9 @@ button:disabled{opacity:.45;cursor:not-allowed;filter:none}
 .field .lr{display:flex;justify-content:space-between;align-items:center;gap:10px}
 .field>label,.field .lr label{display:block;font-size:.9em;margin-bottom:2px}
 .field small{display:block;color:var(--faint);font-size:.78em;margin-top:3px}
+.secret-input-row{display:flex;gap:8px;align-items:center}
+.secret-input-row input{flex:1;min-width:0}
+.secret-action{white-space:nowrap}
 .hardware-box{margin:10px 0 14px;padding:10px;background:var(--panel);border:1px solid var(--line);border-radius:var(--rs)}
 .hardware-line{display:block;color:var(--dim);font-size:.78em;margin:3px 0 8px;word-break:break-word}
 .model-row{display:flex;gap:10px;align-items:center;justify-content:space-between;padding:7px 0;border-top:1px solid var(--line)}
@@ -43,9 +49,9 @@ button:disabled{opacity:.45;cursor:not-allowed;filter:none}
 .model-pull-status{min-height:1.3em;color:var(--ok);font-size:.78em;margin-top:5px;word-break:break-word}
 output{font-variant-numeric:tabular-nums;background:var(--field);border:1px solid var(--line);
  border-radius:20px;padding:1px 10px;font-size:.82em;color:var(--mub);white-space:nowrap}
-input[type=text],input[type=number],textarea,select{background:var(--field);color:var(--tx);
+input[type=text],input[type=url],input[type=password],input[type=number],textarea,select{background:var(--field);color:var(--tx);
  border:1px solid var(--line);border-radius:var(--rs);padding:7px 10px;font:inherit;font-size:.9em}
-input[type=text],textarea,select{width:100%}
+input[type=text],input[type=url],input[type=password],textarea,select{width:100%}
 input[type=number]{width:6.5em;text-align:right}
 textarea{resize:vertical;min-height:2.4em}
 input:focus-visible,textarea:focus-visible,select:focus-visible,button:focus-visible{

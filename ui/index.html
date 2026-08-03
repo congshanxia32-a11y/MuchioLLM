@@ -318,6 +318,22 @@
 
 <div class="grid" style="margin-top:14px">
 
+<section class="card wide section-page" data-section="integrations" id="peer-settings"><h2>Muchio間通信</h2>
+<p class="desc">別のMuchioと、生成した返答テキストだけを一時中継します。音声・設定・会話履歴は送信しません。</p>
+<label class="check"><input data-config-toggle type="checkbox" form="cfg" name="peer_enabled"> Muchio同士の会話を有効にする</label>
+<div class="field"><label>Supabase URL</label><input type="url" form="cfg" name="peer_supabase_url" maxlength="300" placeholder="https://xxxxxxxx.supabase.co"></div>
+<div class="field"><label>Supabase公開キー</label><div class="secret-input-row"><input id="peer-supabase-key" type="password" form="cfg" name="peer_supabase_key" maxlength="500" autocomplete="off" placeholder="公開キーだけを入力"><button type="button" class="ghost secret-action" id="peer-key-toggle" aria-pressed="false" aria-label="&#x516C;&#x958B;&#x30AD;&#x30FC;&#x3092;&#x8868;&#x793A;" onclick="togglePeerKey()">&#x1F441;</button><button type="button" class="ghost secret-action" aria-label="&#x516C;&#x958B;&#x30AD;&#x30FC;&#x3092;&#x30B3;&#x30D4;&#x30FC;" onclick="copyPeerKey()">&#x1F4CB;</button></div></div>
+<div class="field"><label>ルームコード</label><input type="text" form="cfg" name="peer_room" maxlength="120" pattern="[A-Za-z0-9_-]{8,120}" placeholder="同じ部屋のMuchioで共有するコード"></div>
+<div class="field"><div class="lr"><label>最大往復数</label><input type="number" form="cfg" name="peer_max_turns" min="1" max="32" step="1" value="8"></div></div>
+<label class="check"><input data-config-toggle type="checkbox" form="cfg" name="peer_idle_enabled"> 放置中のMuchio間会話を有効にする</label>
+<label class="check"><input data-config-toggle type="checkbox" form="cfg" name="peer_idle_initiator"> このMuchioを自動会話の開始役にする（同じルームで1台だけ）</label>
+<div class="field"><label>放置判定（分）</label><input type="number" form="cfg" name="peer_idle_after_minutes" min="5" max="120" step="5" value="25"></div>
+<div class="field"><label>次の会話まで（分）</label><input type="number" form="cfg" name="peer_idle_interval_minutes" min="10" max="180" step="5" value="40"></div>
+<div class="field"><label>放置中の1日の回数</label><input type="number" form="cfg" name="peer_idle_daily_limit" min="1" max="24" step="1" value="8"></div>
+<p id="peer-status" class="status-note">Muchio間通信はOFFです</p>
+<small>作者が作成したSupabaseプロジェクトのURL・公開キー・同じルームコードを入力してください。service_roleキーは入力しないでください。</small>
+</section>
+
 <section class="card wide section-page" data-section="audio"><h2>こえおぼえ</h2>
 <p class="desc">だれの声か教えると、つぎから名前つきで聞こえる</p>
 <div id="vprof" style="margin-bottom:4px"></div>
@@ -334,6 +350,7 @@
 <div id="friends">よみこみ中...</div>
 <div id="look"></div>
 <label class="check"><input type="checkbox" name="greet_friends"> なかまが来たら気づいて一言いう</label>
+<label class="check"><input data-config-toggle type="checkbox" name="social_context_enabled" checked> 友達・主人・ワールドの情報を会話に使う</label>
 </div></section>
 
 <section class="card wide section-page" data-section="integrations"><h2>記憶ぜんぶ</h2>

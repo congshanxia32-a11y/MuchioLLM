@@ -5,6 +5,40 @@ function toast(msg, err){
   clearTimeout(t._h); t._h = setTimeout(()=>{ t.className=''; }, 3500);
 }
 
+function togglePeerKey(){
+  const input = $('peer-supabase-key');
+  const button = $('peer-key-toggle');
+  if(!input || !button) return;
+  const visible = input.type === 'password';
+  input.type = visible ? 'text' : 'password';
+  button.textContent = visible ? '\u{1F648}' : '\u{1F441}';
+  button.setAttribute('aria-pressed', visible ? 'true' : 'false');
+  button.setAttribute('aria-label', visible ? '公開キーを隠す' : '公開キーを表示');
+}
+
+async function copyPeerKey(){
+  const input = $('peer-supabase-key');
+  if(!input) return;
+  if(!input.value){
+    toast('公開キーを入力してからコピーしてください', true);
+    return;
+  }
+  try{
+    if(navigator.clipboard?.writeText){
+      await navigator.clipboard.writeText(input.value);
+    }else{
+      input.focus();
+      input.select();
+      if(!document.execCommand('copy')) throw new Error('clipboard unavailable');
+    }
+    toast('公開キーをコピーしました');
+  }catch(e){
+    input.focus();
+    input.select();
+    toast('自動コピーできませんでした。選択された文字列を手動でコピーしてください', true);
+  }
+}
+
 let BOOT = null;
 const PERCENT_FIELDS = new Set(['reply_chance','friend_reply_chance','poke_chance','world_comment_chance','song_comment_chance']);
 const CHECK_FIELDS = new Set(['think','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
@@ -15,6 +49,10 @@ CHECK_FIELDS.add('vrcx_enabled');
 CHECK_FIELDS.add('memory_conversation_enabled');
 CHECK_FIELDS.add('memory_words_enabled');
 CHECK_FIELDS.add('memory_diary_enabled');
+CHECK_FIELDS.add('peer_enabled');
+CHECK_FIELDS.add('peer_idle_enabled');
+CHECK_FIELDS.add('peer_idle_initiator');
+CHECK_FIELDS.add('social_context_enabled');
 const DEFAULT_WEIGHT_OPTIONS = [{value:'low', label:'よわめ'}, {value:'mid', label:'ふつう'}, {value:'high', label:'つよめ'}];
 function optHtml(items, selected){
   return items.map(o=>`<option value="${esc(o.value)}"${o.value===selected?' selected':''}>${esc(o.label)}</option>`).join('');
@@ -125,6 +163,17 @@ async function upd(){
     const atBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 30;
     el.innerHTML = await r.text();
     if(atBottom) el.scrollTop = el.scrollHeight;
+  }catch(e){}
+  try{
+    const s = await (await fetch('/peer_status')).json();
+    const el = $('peer-status');
+    if(el){
+      const labels = {disabled:'OFF',connecting:'接続中',connected:'接続済み',invalid:'設定エラー',
+        missing_dependency:'追加ライブラリ不足',error:'接続エラー'};
+      el.textContent = `Muchio間通信: ${labels[s.state] || s.state || '不明'} — ${s.detail || ''}`;
+      el.className = 'status-note ' + (s.state === 'connected' ? 'good' :
+        (['invalid','missing_dependency','error'].includes(s.state) ? 'err' : ''));
+    }
   }catch(e){}
 }
 setInterval(upd, 3000); upd();
