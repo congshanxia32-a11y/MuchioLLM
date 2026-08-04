@@ -17,7 +17,6 @@
   "peer_room": "",
   "peer_max_turns": 8,
   "peer_idle_enabled": false,
-  "peer_idle_initiator": false,
   "peer_idle_after_minutes": 25,
   "peer_idle_interval_minutes": 40,
   "peer_idle_daily_limit": 8,

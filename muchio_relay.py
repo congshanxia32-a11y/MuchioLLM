@@ -45,6 +45,28 @@ def make_message(text: str, sender_id: str, conversation_id: str,
     }
 
 
+def make_hello(sender_id: str) -> Dict[str, Any]:
+    """Build a control-only hello; it contains no conversation data."""
+    return {"type": "peer_hello", "version": 1, "sender_id": str(sender_id)}
+
+
+def validate_hello(event: Any, self_id: str) -> Optional[Dict[str, Any]]:
+    event = _unwrap_event(event)
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") != "peer_hello" or event.get("version") != 1:
+        return None
+    sender = str(event.get("sender_id") or "")
+    if not sender or sender == self_id or len(sender) > 64:
+        return None
+    return {"type": "peer_hello", "version": 1, "sender_id": sender}
+
+
+def select_leader(sender_ids: Iterable[str]) -> Optional[str]:
+    ids = sorted({str(sender_id) for sender_id in sender_ids if str(sender_id)})
+    return ids[0] if ids else None
+
+
 def validate_settings(cfg: Dict[str, Any]) -> Optional[str]:
     """Return a user-facing error, or None when relay settings are usable."""
     url = str(cfg.get("peer_supabase_url") or "").strip()
@@ -121,6 +143,8 @@ class PeerRelay:
         }
         self._seen_ids = set()
         self._seen_lock = threading.Lock()
+        self._peer_seen: Dict[str, float] = {}
+        self._peer_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -138,7 +162,35 @@ class PeerRelay:
 
     def status(self) -> Dict[str, Any]:
         with self._status_lock:
-            return dict(self._status)
+            status = dict(self._status)
+        status.update(self.peer_snapshot())
+        return status
+
+    def _remember_peer(self, sender_id: str) -> None:
+        if not sender_id or sender_id == self.sender_id:
+            return
+        with self._peer_lock:
+            self._peer_seen[sender_id] = time.time()
+
+    def _clear_peers(self) -> None:
+        with self._peer_lock:
+            self._peer_seen.clear()
+
+    def peer_snapshot(self) -> Dict[str, Any]:
+        now = time.time()
+        with self._peer_lock:
+            self._peer_seen = {
+                sender_id: seen_at for sender_id, seen_at in self._peer_seen.items()
+                if now - seen_at <= 90.0
+            }
+            peers = tuple(sorted(self._peer_seen))
+        leader = select_leader((self.sender_id, *peers))
+        return {
+            "peer_count": len(peers),
+            "peer_ids": list(peers),
+            "is_leader": leader == self.sender_id,
+            "leader_id": leader,
+        }
 
     def publish(self, text: str, conversation_id: str, turn: int) -> bool:
         """Queue one generated reply for sending.  Never blocks the main loop."""
@@ -200,6 +252,7 @@ class PeerRelay:
         while not self._stop.is_set():
             cfg = self._snapshot()
             if not cfg.get("peer_enabled"):
+                self._clear_peers()
                 self._set_status("disabled", "Muchio間通信はOFFです")
                 await asyncio.sleep(0.5)
                 continue
@@ -221,6 +274,7 @@ class PeerRelay:
                     await asyncio.sleep(3.0)
 
     async def _run_session(self, cfg: Dict[str, Any], signature: tuple[Any, ...]) -> None:
+        self._clear_peers()
         self._set_status("connecting", "Supabaseへ接続中です")
         client = await asyncio.wait_for(
             acreate_client(str(cfg["peer_supabase_url"]).strip(),
@@ -238,6 +292,7 @@ class PeerRelay:
             msg = validate_message(event, self.sender_id, max_turns)
             if not msg:
                 return
+            self._remember_peer(msg["sender_id"])
             with self._seen_lock:
                 if msg["message_id"] in self._seen_ids:
                     return
@@ -249,8 +304,16 @@ class PeerRelay:
             except queue.Full:
                 self._log("Muchio間通信: 受信待ちが満杯なので発言を破棄しました")
 
+        def on_hello(event: Any) -> None:
+            hello = validate_hello(event, self.sender_id)
+            if hello:
+                self._remember_peer(hello["sender_id"])
+
         channel = channel.on_broadcast(event="peer_reply", callback=on_broadcast)
+        channel = channel.on_broadcast(event="peer_hello", callback=on_hello)
         await asyncio.wait_for(channel.subscribe(), timeout=20.0)
+        await channel.send_broadcast("peer_hello", make_hello(self.sender_id))
+        last_hello = time.monotonic()
         self._set_status("connected", f"ルーム「{room}」に接続中です")
         try:
             while not self._stop.is_set():
@@ -262,8 +325,12 @@ class PeerRelay:
                     except queue.Empty:
                         break
                     await channel.send_broadcast("peer_reply", payload)
+                if time.monotonic() - last_hello >= 30.0:
+                    await channel.send_broadcast("peer_hello", make_hello(self.sender_id))
+                    last_hello = time.monotonic()
                 await asyncio.sleep(0.25)
         finally:
+            self._clear_peers()
             try:
                 await client.remove_channel(channel)
             except Exception:

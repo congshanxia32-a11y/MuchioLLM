@@ -160,7 +160,6 @@ DEFAULTS = {
     "peer_room": "",            # shared random room code
     "peer_max_turns": 8,         # one human-triggered peer conversation hop limit
     "peer_idle_enabled": False,  # occasional peer sessions while the owner is quiet
-    "peer_idle_initiator": False,  # enable on exactly one Muchio in the room
     "peer_idle_after_minutes": 25,
     "peer_idle_interval_minutes": 40,
     "peer_idle_daily_limit": 8,
@@ -2969,12 +2968,20 @@ _PURGE = []                  # わすれたい単語のキュー。mainループ
 
 _MEMORY_REFRESH = threading.Event()
 _PEER_RELAY = None
+_PEER_IDLE_STATUS = {
+    "idle_state": "off",
+    "idle_sessions_today": 0,
+    "idle_daily_limit": 8,
+    "idle_next_seconds": None,
+}
 
 
 def _peer_status():
     if _PEER_RELAY is None:
         return {"state": "disabled", "detail": "Muchio間通信は未起動です"}
-    return _PEER_RELAY.status()
+    status = _PEER_RELAY.status()
+    status.update(_PEER_IDLE_STATUS)
+    return status
 
 
 def _peer_max_turns():
@@ -3423,7 +3430,6 @@ class _UIHandler(BaseHTTPRequestHandler):
             "peer_room": q.get("peer_room", [""])[0].strip()[:120],
             "peer_max_turns": int(num("peer_max_turns", 1, 32)),
             "peer_idle_enabled": "peer_idle_enabled" in q,
-            "peer_idle_initiator": "peer_idle_initiator" in q,
             "peer_idle_after_minutes": int(num("peer_idle_after_minutes", 5, 120)),
             "peer_idle_interval_minutes": int(num("peer_idle_interval_minutes", 10, 180)),
             "peer_idle_daily_limit": int(num("peer_idle_daily_limit", 1, 24)),
@@ -3476,7 +3482,7 @@ def start_ui():
 
 # ---------------------------------------------------------------- main loop
 def main():
-    global _PEER_RELAY
+    global _PEER_RELAY, _PEER_IDLE_STATUS
     if not _acquire_instance_lock():
         print("MuchioLLMは既に起動しています。既存プロセスを終了してから再実行してください。",
               flush=True)
@@ -3829,11 +3835,18 @@ def main():
                     pending = None
                     say(target, exclude_last=excl, thinking=True, origin=origin,
                         conversation_id=conversation_id, turn=turn)
+            peer_runtime = (_PEER_RELAY.peer_snapshot()
+                            if _PEER_RELAY is not None else {})
+            peer_available = bool(peer_runtime.get("peer_count"))
+            peer_is_leader = bool(peer_runtime.get("is_leader"))
             idle_busy = (pending is not None or bool(peer_pending)
                          or shown_at is not None
                          or now - last_reply <= CFG["cooldown"])
+            _PEER_IDLE_STATUS = peer_idle_scheduler.status(
+                now, last_heard, CFG, peer_available, peer_is_leader)
             if peer_idle_scheduler.should_start(now, last_heard, last_reply,
-                                                idle_busy, CFG):
+                                                idle_busy, peer_available,
+                                                peer_is_leader, CFG):
                 conversation_id = uuid.uuid4().hex
                 peer_session_id = conversation_id
                 peer_session_last = now

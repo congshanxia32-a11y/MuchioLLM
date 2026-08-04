@@ -831,6 +831,12 @@ assert m.monologue_topic("今日は机の輪郭を測る") == "other"
 assert m.topic_on_cooldown("虚空を考える", ["abstract"])
 assert not m.topic_on_cooldown("虚空を考える", ["place"])
 
+_prefix_cfg_bak = {k: m.CFG.get(k) for k in (
+    "monologue_connector_mode", "monologue_connectors",
+    "monologue_max_continuations")}
+m.CFG["monologue_connector_mode"] = "always"
+m.CFG["monologue_connectors"] = ""
+m.CFG["monologue_max_continuations"] = m.MONOLOGUE_MAX_CONTINUATIONS
 _prefixes = {m.monologue_prefix(i) for i in range(1, 11)}
 assert _prefixes <= set(m.MONOLOGUE_PREFIXES)
 assert m.monologue_prefix(0) == ""
@@ -838,6 +844,7 @@ assert m.monologue_prefix(m.MONOLOGUE_MAX_CONTINUATIONS + 1) == ""
 assert m.monologue_prompt(1, "直前の返答", ["abstract"]).startswith("直前のひとりごと")
 assert "新しい観察対象" in m.monologue_prompt(m.MONOLOGUE_MAX_CONTINUATIONS,
                                                  "直前の返答", ["abstract"])
+m.CFG.update(_prefix_cfg_bak)
 for _key in ("monologue_max_continuations", "monologue_topic_cooldown",
              "monologue_connector_mode", "monologue_connectors",
              "monologue_avoid_words"):

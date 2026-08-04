@@ -31,6 +31,15 @@ def test_message_payload_does_not_add_social_context_fields():
     assert "friends" not in message and "world" not in message and "owner" not in message
 
 
+def test_hello_elects_one_leader_without_social_data():
+    hello = relay.make_hello("sender-a")
+    assert set(hello) == {"type", "version", "sender_id"}
+    assert relay.validate_hello(hello, "sender-b")["sender_id"] == "sender-a"
+    assert relay.validate_hello(hello, "sender-a") is None
+    assert relay.select_leader(("sender-b", "sender-a")) == "sender-a"
+    assert relay.select_leader(("sender-a",)) == "sender-a"
+
+
 def test_turn_limit_simulation():
     current = relay.make_message("start", "sender-a", "conversation-a", 8)
     received = []
@@ -114,11 +123,11 @@ def test_fake_realtime_session_sends_without_supabase():
         assert r.status()["state"] == "connected"
         assert r.publish("hello", "conversation-a", 8)
         for _ in range(20):
-            if sent:
+            if any(item[0] == "peer_reply" for item in sent):
                 break
             time.sleep(0.05)
-        assert sent and sent[0][0] == "peer_reply"
-        assert sent[0][1]["text"] == "hello"
+        replies = [item for item in sent if item[0] == "peer_reply"]
+        assert replies and replies[0][1]["text"] == "hello"
         r.stop()
     finally:
         relay.acreate_client = old_create
@@ -127,6 +136,7 @@ def test_fake_realtime_session_sends_without_supabase():
 if __name__ == "__main__":
     test_settings_validation()
     test_message_validation_and_self_filtering()
+    test_hello_elects_one_leader_without_social_data()
     test_turn_limit_simulation()
     test_disabled_relay_does_not_queue_messages()
     test_fake_realtime_session_sends_without_supabase()

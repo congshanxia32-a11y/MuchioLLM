@@ -249,6 +249,19 @@ async function upd(){
       el.className = 'status-note ' + (s.state === 'connected' ? 'good' :
         (['invalid','missing_dependency','error'].includes(s.state) ? 'err' : ''));
     }
+    const idleEl = $('peer-idle-status');
+    if(idleEl){
+      const idleLabels = {
+        off:'OFF', waiting_peer:'相手のMuchioを待機中', waiting_leader:'自動開始役を選出中',
+        leader_waiting:'自動開始役として待機中', daily_limit:'本日の上限に到達'
+      };
+      const next = Number.isFinite(Number(s.idle_next_seconds))
+        ? `次回まで約${Math.max(0, Math.ceil(Number(s.idle_next_seconds) / 60))}分` : '';
+      const peerCount = Number(s.peer_count || 0);
+      idleEl.textContent = `自動会話: ${idleLabels[s.idle_state] || '確認中'} / 同じルームのMuchio: ${peerCount}台` +
+        (next ? ` / ${next}` : '') + ` / 今日 ${s.idle_sessions_today || 0}/${s.idle_daily_limit || 8}回`;
+      idleEl.className = 'status-note ' + (s.idle_state === 'leader_waiting' ? 'good' : '');
+    }
   }catch(e){}
 }
 setInterval(upd, 3000); upd();

@@ -10,7 +10,7 @@ def test_peer_settings_are_submitted_with_main_config_form():
     start = text.index('<form id="cfg"')
     end = text.index("</form>", start)
     for field in ("peer_enabled", "peer_supabase_url", "peer_supabase_key", "peer_room", "peer_max_turns",
-                  "peer_idle_enabled", "peer_idle_initiator", "peer_idle_after_minutes",
+                  "peer_idle_enabled", "peer_idle_after_minutes",
                   "peer_idle_interval_minutes", "peer_idle_daily_limit"):
         pos = text.index(f'name="{field}"')
         control_start = text.rfind("<input", 0, pos)
@@ -28,6 +28,13 @@ def test_peer_key_has_visibility_and_copy_controls():
     assert '&#x1F441;' in text
     assert '&#x1F4CB;' in text
     assert "async function copyPeerKey" in (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+
+
+def test_peer_status_explains_automatic_idle_role():
+    text = HTML.read_text(encoding="utf-8")
+    assert 'id="peer-idle-status"' in text
+    app = (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+    assert "idle_next_seconds" in app
 
 
 def test_dynamic_range_controls_exist_for_traits_and_llm_sampling():
