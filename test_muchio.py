@@ -510,6 +510,30 @@ finally:
     m._word_counts = _ng_counts
     m._WORDS_CACHE["key"] = None
 
+# ---- Muchio間会話: 相手発言として扱い、生成手順を返さない ----
+assert "相手のMuchio" in m.peer_dialogue_prompt("[Muchio] こんにちは")
+assert not m._peer_contract_hits("今日は静かだね。")
+assert m._peer_contract_hits("Alright, let's tackle this query. The user is [Muchio].")
+_peer_cfg_bak = dict(m.CFG)
+_peer_chat_bak = m.ollama_chat
+_peer_calls = []
+try:
+    m.CFG["mode"] = "jp"
+    def _fake_peer_chat(history, user_text, timeout=90, diversity=0):
+        _peer_calls.append(user_text)
+        return ("Alright, let's tackle this query. The user is [Muchio]."
+                if len(_peer_calls) == 1 else "そういう見方もあるね。")
+    m.ollama_chat = _fake_peer_chat
+    assert m.gen_reply([], "[Muchio] 同じ言葉を繰り返すね。", peer=True) == "そういう見方もあるね。"
+    assert len(_peer_calls) == 2, _peer_calls
+    assert "相手のMuchio" in _peer_calls[0]
+    _peer_calls.clear()
+    m.ollama_chat = lambda *args, **kwargs: "Okay, let me try to work through this query step by step."
+    assert m.gen_reply([], "[Muchio] まだ話せる？", peer=True) == "そういう見方もあるね。"
+finally:
+    m.CFG.clear(); m.CFG.update(_peer_cfg_bak)
+    m.ollama_chat = _peer_chat_bak
+
 # ---- ものしりナレッジ: キーワード一致で注入・不一致で無音。空行は無視 ----
 _kn_bak = m.CFG.get("knowledge")
 m.CFG["knowledge"] = "神話: ゼウスはギリシャの神さまの王\n\nうちゅう: ブラックホールは光もにげられない"

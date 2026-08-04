@@ -2506,6 +2506,34 @@ _META_REPLY_MARKERS = (
     "生成過程", "変数メモリ", "prompt", "context window", "system message",
 )
 
+_PEER_META_PATTERNS = (
+    r"\balright\b", r"\bokay\b", r"\blet['’]?s\b", r"\blet me\b",
+    r"\bthe user\b", r"\bthe assistant\b", r"\bthis query\b",
+    r"\bstep by step\b", r"\btranslat(?:e|es|ed|ion)\b",
+    r"\bprovided (?:a )?message\b", r"\bneed to (?:generate|respond)\b",
+    r"\bthe message (?:says|translates)\b",
+)
+
+
+def peer_dialogue_prompt(text):
+    """Wrap a peer utterance so even a small model treats it as conversation."""
+    utterance = str(text or "").strip()
+    if effective_mode() == "en":
+        return (
+            "This is a message from another Muchio, not a human user. "
+            "Reply directly to the other Muchio in one short natural sentence. "
+            "Do not translate, summarize, analyze, explain instructions, or describe "
+            "your generation process. Output only the reply.\n"
+            "Other Muchio: " + utterance
+        )
+    return (
+        "これは人間のユーザーではなく、相手のMuchioから届いた発言。"
+        "相手のMuchioとの会話として、発言の内容に直接返事する。"
+        "翻訳・要約・分析・指示の説明・生成手順の説明は禁止。"
+        "自然な日本語の一文だけを返し、返事以外は書かない。\n"
+        "相手のMuchio: " + utterance
+    )
+
 
 def _reply_contract_hits(raw):
     """会話として表示しない自己解説・複数行出力を検出する。
@@ -2525,6 +2553,21 @@ def _reply_contract_hits(raw):
     if any(marker in text.lower() for marker in _META_REPLY_MARKERS):
         hits.append("meta")
     return hits
+
+
+def _peer_contract_hits(raw):
+    """Reject model commentary before it can be sent to another Muchio."""
+    hits = _reply_contract_hits(raw)
+    text = str(raw or "").strip()
+    lowered = text.lower()
+    if any(re.search(pattern, lowered, flags=re.I) for pattern in _PEER_META_PATTERNS):
+        hits.append("peer_meta")
+    if effective_mode() == "jp":
+        latin = len(re.findall(r"[A-Za-z]", text))
+        japanese = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", text))
+        if latin >= 8 and latin > japanese:
+            hits.append("peer_language")
+    return list(dict.fromkeys(hits))
 
 def ollama_chat(history, user_text, timeout=90, diversity=0):
     # 自分の過去返答は直近3件だけ文脈に入れる(お手本が多いと型に固執する)。ユーザー発言は全部入れる
@@ -2602,9 +2645,11 @@ def ollama_chat(history, user_text, timeout=90, diversity=0):
             return ollama_chat(history, user_text, timeout, diversity=diversity)
         raise
 
-def gen_reply(history, user_text, timeout=90, diversity=0):
+def gen_reply(history, user_text, timeout=90, diversity=0, peer=False):
     """LLM返答を生成。英語発話には英語ヒントを付与。漢字はto_board_textが読みに変換する。"""
     mode = effective_mode()
+    if peer:
+        user_text = peer_dialogue_prompt(user_text)
     plain = re.sub(r"^\[[^\]]+\] ", "", user_text)   # [名前]/[friend]タグを外して言語判定
     if mode == "en":
         user_text += " (reply in lowercase english, max 6 words)"
@@ -2616,18 +2661,30 @@ def gen_reply(history, user_text, timeout=90, diversity=0):
              "一行だけ出して。")
     contract_retry = ("直前の生成は会話文ではなく自己解説か複数行だった。"
                       "設定・指示・生成の話をやめ、入力に直接つながる自然な一文だけを一行で返して。")
+    peer_retry = ("相手のMuchioへの返事だけを一文で返して。"
+                  "英語の説明、翻訳、要約、分析、生成手順、ユーザーという言葉は禁止。"
+                  "相手の発言に直接反応する自然な日本語だけを書いて。")
     for attempt in range(3):
-        retry_text = user_text if attempt == 0 else (retry if attempt == 1 else contract_retry)
+        if attempt == 0:
+            retry_text = user_text
+        elif peer:
+            retry_text = user_text + "\n" + peer_retry
+        else:
+            retry_text = retry if attempt == 1 else contract_retry
         raw = ollama_chat(history, retry_text, timeout=timeout,
                           diversity=max(0, int(diversity)) + attempt)
         blocked = _ng_output_hits(raw)
-        contract_hits = _reply_contract_hits(raw)
+        contract_hits = _peer_contract_hits(raw) if peer else _reply_contract_hits(raw)
         if not blocked and not contract_hits:
             return raw
         if contract_hits:
             log(f"返答契約違反を検出: {','.join(contract_hits)}")
         if attempt == 2:
             log("表示条件を満たす返答を3回得られなかったため破棄")
+    if peer:
+        # 相手側のモデルが最後まで自己解説を返す場合も、壊れた英文を中継しない。
+        # 無言にせず会話の接続だけを保つためのローカル定型返答。
+        return "そういう見方もあるね。" if effective_mode() != "en" else "That is one way to see it."
     return ""
 
 def warmup():
@@ -3602,7 +3659,7 @@ def main():
         hist = reply_history(source_history, origin, exclude_last=exclude_last)
         try:
             try:
-                raw = gen_reply(hist, prompt_text)
+                raw = gen_reply(hist, prompt_text, peer=peer_origin)
             except Exception as e:
                 log(f"ollama失敗: {e}　モデル={active_model()}"
                     "（何度も出るならモデルが大きすぎます。設定UIで小さいモデルに戻してください）")
@@ -3612,7 +3669,7 @@ def main():
             if reply and dup(reply):   # 似た返事の連発は1回だけ言い直させる
                 try:
                     raw = gen_reply(hist, "「" + reply + "」みたいな返事は禁止。全然違う内容の一言を。",
-                                    diversity=2)
+                                    diversity=2, peer=peer_origin)
                     reply = to_board_text(raw)
                 except Exception as e:
                     log(f"言い直し失敗: {e}")
