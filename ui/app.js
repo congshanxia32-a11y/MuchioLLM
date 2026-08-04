@@ -40,6 +40,9 @@ async function copyPeerKey(){
 }
 
 let BOOT = null;
+let bootstrapReadyHideTimer = 0;
+let bootstrapReadyFrame = 0;
+let bootstrapReadyTransitionCleanup = null;
 const PERCENT_FIELDS = new Set(['reply_chance','friend_reply_chance','poke_chance','world_comment_chance','song_comment_chance']);
 const CHECK_FIELDS = new Set(['think','dynamic_enabled','kanji_mode','osc_proxy','greet_friends','diary','rule_polite','rule_trivia','rule_asks','rule_names',
   'persona_character_enabled','persona_talk_enabled','persona_preferences_enabled','persona_free_text_enabled','persona_examples_enabled',
@@ -61,6 +64,31 @@ function optHtml(items, selected){
 }
 function renderWeightOptions(items, selected){
   return items.map(o=>`<option value="${esc(o.value)}"${o.value===selected?' selected':''}>${esc(o.label)}</option>`).join('');
+}
+function clearBootstrapReadyState(){
+  if(bootstrapReadyFrame){
+    cancelAnimationFrame(bootstrapReadyFrame);
+    bootstrapReadyFrame = 0;
+  }
+  if(bootstrapReadyHideTimer){
+    clearTimeout(bootstrapReadyHideTimer);
+    bootstrapReadyHideTimer = 0;
+  }
+  if(bootstrapReadyTransitionCleanup){
+    bootstrapReadyTransitionCleanup();
+    bootstrapReadyTransitionCleanup = null;
+  }
+}
+function workspaceShouldBeInert(){
+  const overlay = $('startup-loading');
+  const overlayBlocking = !!overlay && !overlay.hidden && overlay.dataset.state !== 'ready';
+  return document.body.classList.contains('tour-active') || overlayBlocking;
+}
+function syncWorkspaceInert(){
+  const workspace = $('workspace');
+  if(!workspace) return;
+  if(workspaceShouldBeInert()) workspace.setAttribute('inert', '');
+  else workspace.removeAttribute('inert');
 }
 function dynamicPreviewPhase(key){
   let h = 2166136261;
@@ -304,6 +332,55 @@ function setBootstrapLoadingState(state, message){
   }
 }
 
+function setBootstrapLoadingState(state, message){
+  const overlay = $('startup-loading');
+  const messageEl = $('startup-loading-message');
+  const retry = $('startup-loading-retry');
+  if(!overlay || !messageEl || !retry) return;
+  messageEl.textContent = message || (state === 'error'
+    ? '險ｭ螳壹ｒ隱ｭ縺ｿ霎ｼ繧√∪縺帙ｓ縺ｧ縺励◆'
+    : '縺励・繧峨￥縺雁ｾ・■縺上□縺輔＞');
+  retry.hidden = state !== 'error';
+  retry.disabled = state === 'loading';
+  clearBootstrapReadyState();
+  overlay.dataset.state = state;
+  overlay.classList.toggle('is-error', state === 'error');
+  if(state === 'ready'){
+    overlay.classList.remove('is-error');
+    overlay.hidden = false;
+    overlay.classList.remove('is-ready');
+    overlay.dataset.visible = 'pending';
+    syncWorkspaceInert();
+    const finishReadyHide = ()=>{
+      if(overlay.dataset.state !== 'ready') return;
+      clearBootstrapReadyState();
+      overlay.hidden = true;
+      overlay.dataset.visible = 'hidden';
+    };
+    const onReadyTransitionEnd = event=>{
+      if(event.target !== overlay || event.propertyName !== 'opacity') return;
+      finishReadyHide();
+    };
+    overlay.addEventListener('transitionend', onReadyTransitionEnd);
+    bootstrapReadyTransitionCleanup = ()=>overlay.removeEventListener('transitionend', onReadyTransitionEnd);
+    bootstrapReadyHideTimer = setTimeout(finishReadyHide, 320);
+    bootstrapReadyFrame = requestAnimationFrame(()=>{
+      overlay.dataset.visible = 'painted';
+      bootstrapReadyFrame = requestAnimationFrame(()=>{
+        bootstrapReadyFrame = 0;
+        if(overlay.dataset.state !== 'ready') return;
+        overlay.classList.add('is-ready');
+      });
+    });
+    return;
+  }
+  overlay.hidden = false;
+  overlay.classList.remove('is-ready');
+  overlay.dataset.visible = 'visible';
+  syncWorkspaceInert();
+  if(state === 'error') requestAnimationFrame(()=>retry.focus());
+}
+
 async function loadBootstrap(){
   setBootstrapLoadingState('loading', '設定を読み込んでいます…');
   try{
@@ -525,7 +602,7 @@ function startTour(step=0){
   writeOnboarding('active', tourIndex);
   $('tour-layer').hidden = false;
   document.body.classList.add('tour-active');
-  $('workspace')?.setAttribute('inert','');
+  syncWorkspaceInert();
   renderTourStep();
   $('tour-card').focus();
 }
@@ -533,7 +610,7 @@ function endTour(status){
   writeOnboarding(status, tourIndex);
   $('tour-layer').hidden = true;
   document.body.classList.remove('tour-active');
-  $('workspace')?.removeAttribute('inert');
+  syncWorkspaceInert();
   updateSetupStatus();
   const restore = tourRestoreFocus;
   tourRestoreFocus = null;
