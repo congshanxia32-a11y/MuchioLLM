@@ -23,7 +23,7 @@
 </nav>
 <div class="sidebar-foot"><small>必要なところだけ開いて設定できます</small></div>
 </aside>
-<div class="workspace" id="workspace">
+<div class="workspace" id="workspace" inert>
 <section class="card wide section-page start-overview" data-section="start" id="start-overview">
 <div class="section-hero"><div><span class="eyebrow">SETUP</span><h2>むちこを動かす準備</h2><p>GPUとモデル、名前、音声を順に確認して、VRChatで最初の返答まで進める。</p></div><button type="button" id="start-tour" class="primary-action">案内をはじめる</button></div>
 <div class="setup-status" id="setup-status"><div class="setup-step" data-setup="model"><span>1</span><div><b>モデルを準備</b><small>GPUに合うLLMを選ぶ</small></div><button type="button" class="ghost" data-go-section="llm">開く</button></div><div class="setup-step" data-setup="identity"><span>2</span><div><b>名前を設定</b><small>ペットと飼い主を登録</small></div><button type="button" class="ghost" data-go-section="basic">開く</button></div><div class="setup-step" data-setup="audio"><span>3</span><div><b>音声と表示を確認</b><small>耳・OSC・文字盤</small></div><button type="button" class="ghost" data-go-section="audio">開く</button></div><div class="setup-step" data-setup="test"><span>4</span><div><b>VRChatで試す</b><small>名前を呼んで返答を確認</small></div><button type="button" id="start-test" class="ghost">確認</button></div></div>
@@ -477,6 +477,16 @@
 <h2 id="tour-title">まずモデルを準備</h2>
 <p id="tour-body">GPU・VRAM・RAMに合うモデルを選びます。</p>
 <div class="tour-actions"><button type="button" class="ghost" id="tour-skip">スキップ</button><span></span><button type="button" class="ghost" id="tour-prev">戻る</button><button type="button" class="primary-action" id="tour-next">次へ</button></div>
+</div>
+</div>
+
+<div id="startup-loading" role="status" aria-live="polite" aria-label="設定を読み込んでいます">
+<div class="startup-loading-card">
+<div class="startup-loading-mark" aria-hidden="true">✦</div>
+<p class="startup-loading-title">設定を読み込んでいます…</p>
+<p class="startup-loading-message" id="startup-loading-message">しばらくお待ちください</p>
+<div class="startup-loading-spinner" aria-hidden="true"></div>
+<button type="button" class="ghost" id="startup-loading-retry" hidden>再試行</button>
 </div>
 </div>
 

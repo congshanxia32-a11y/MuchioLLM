@@ -137,6 +137,12 @@ def test_startup_loading_overlay_contract_exists():
     assert "function setBootstrapLoadingState" in app
     assert "async function loadBootstrap" in app
     assert "startup-loading-retry" in app
+    assert "requestAnimationFrame" in app
+    assert "setTimeout" in app
+    assert "clearTimeout" in app
+    assert "workspaceShouldBeInert" in app
+    assert "overlay.dataset.visible" in app
+    assert "retry.focus()" in app
     assert "#startup-loading" in css
     assert "#startup-loading.is-ready" in css
 
