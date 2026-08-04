@@ -1,3 +1,6 @@
+from pathlib import Path
+
+import muchio_llm as m
 from settings_transfer import (
     SECRET_SETTING_KEYS,
     SETTING_CATEGORY_DEFS,
@@ -83,10 +86,21 @@ def test_import_clamps_numbers_and_rejects_boolean_string_mismatch():
         raise AssertionError("boolean/string mismatch was accepted")
 
 
+def test_bootstrap_and_handler_expose_settings_transfer_contract():
+    bootstrap = m._bootstrap_data()
+    assert bootstrap["setting_categories"]
+    source = Path(m.__file__).read_text(encoding="utf-8")
+    assert 'path == "/settings_export"' in source
+    assert 'self.path == "/settings_import"' in source
+    assert "Content-Disposition" in source
+    assert '_backup_path(CONFIG, "import")' in source
+
+
 if __name__ == "__main__":
     test_personality_categories_and_secrets_are_declared()
     test_export_contains_only_selected_category_keys()
     test_import_merges_only_selected_categories_and_supports_flat_config()
     test_import_rejects_secret_and_invalid_enum()
     test_import_clamps_numbers_and_rejects_boolean_string_mismatch()
+    test_bootstrap_and_handler_expose_settings_transfer_contract()
     print("ok")

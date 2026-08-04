@@ -16,6 +16,7 @@ from pathlib import Path
 import growth
 import muchio_relay
 from peer_idle import IdlePeerScheduler
+import settings_transfer
 import voiceid
 import vrcx_sense
 
@@ -3017,6 +3018,7 @@ def _bootstrap_data():
         "presets": PRESETS,
         "traits": traits,
         "rule_toggles": [{"key": k, "label": label} for k, label, *_ in RULES_TOGGLES],
+        "setting_categories": settings_transfer.setting_category_payload(DEFAULTS, CFG),
         "model_options": _model_choices("model"),
         "model_en_options": _model_choices("model_en"),
         "weight_options": [{"value": v, "label": label}
@@ -3135,6 +3137,15 @@ class _UIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_download_json(self, obj, filename):
+        body = json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _send_file(self, path, content_type):
         try:
             body = path.read_bytes()
@@ -3173,6 +3184,13 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if path == "/bootstrap":
             self._send_json(_bootstrap_data())
+            return
+        if path == "/settings_export":
+            categories = [item for item in parse_qs(query).get("categories", [""])[0].split(",") if item]
+            document = settings_transfer.build_export_document(
+                DEFAULTS, CFG, categories, time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            )
+            self._send_download_json(document, "muchiko-settings.json")
             return
         if path == "/hardware":
             self._send_json(hardware_info())
@@ -3284,6 +3302,38 @@ class _UIHandler(BaseHTTPRequestHandler):
             return
         if self.path == "/update":
             self._send_json(_run_update())
+            return
+        if self.path == "/settings_import":
+            n = int(self.headers.get("Content-Length") or 0)
+            try:
+                request = json.loads(self.rfile.read(n).decode("utf-8"))
+                if not isinstance(request, dict):
+                    raise ValueError("読み込みデータの形式が不正です")
+                document = request.get("document") or {}
+                if not isinstance(document, dict):
+                    raise ValueError("設定ファイルの形式が不正です")
+                categories = request.get("categories") or document.get("categories") or []
+                if isinstance(categories, str):
+                    categories = [item for item in categories.split(",") if item]
+                if not isinstance(categories, list):
+                    raise ValueError("カテゴリの形式が不正です")
+                load_cfg()
+                if request.get("cfg_mtime") and request["cfg_mtime"] != str(_cfg_mtime):
+                    self._send_json({"ok": False, "err": "conflict"}, 409)
+                    return
+                merged, imported, ignored = settings_transfer.merge_import_document(
+                    DEFAULTS, CFG, document, categories
+                )
+                if CONFIG.exists():
+                    shutil.copy2(CONFIG, _backup_path(CONFIG, "import"))
+                CONFIG.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+                load_cfg()
+                self._send_json({"ok": True, "mtime": str(_cfg_mtime),
+                                 "categories": categories, "imported": imported, "ignored": ignored})
+            except (ValueError, TypeError, json.JSONDecodeError) as e:
+                self._send_json({"ok": False, "err": str(e)}, 400)
+            except OSError as e:
+                self._send_json({"ok": False, "err": str(e)}, 500)
             return
         n = int(self.headers.get("Content-Length") or 0)
         q = parse_qs(self.rfile.read(n).decode("utf-8"))
