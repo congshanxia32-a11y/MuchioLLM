@@ -1,3 +1,4 @@
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -98,6 +99,33 @@ def test_settings_transfer_screen_has_export_and_import_controls():
     assert "muchiko-settings.json" in app
 
 
+def test_settings_transfer_screen_stays_inside_workspace():
+    class ParentTrackingParser(HTMLParser):
+        void_tags = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+        def __init__(self):
+            super().__init__()
+            self.stack = []
+            self.transfer_parent = None
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if attrs.get("id") == "settings-transfer":
+                self.transfer_parent = self.stack[-1][1] if self.stack else None
+            if tag not in self.void_tags:
+                self.stack.append((tag, attrs.get("id")))
+
+        def handle_endtag(self, tag):
+            for index in range(len(self.stack) - 1, -1, -1):
+                if self.stack[index][0] == tag:
+                    self.stack = self.stack[:index]
+                    break
+
+    parser = ParentTrackingParser()
+    parser.feed(HTML.read_text(encoding="utf-8"))
+    assert parser.transfer_parent == "workspace"
+
+
 def test_unitypackage_descriptions_cover_both_packages_and_repair_mapping():
     html = HTML.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
@@ -118,5 +146,6 @@ if __name__ == "__main__":
     test_monologue_controls_are_submitted_with_main_config_form()
     test_monologue_controls_are_bound_to_bootstrap_and_save_ui()
     test_settings_transfer_screen_has_export_and_import_controls()
+    test_settings_transfer_screen_stays_inside_workspace()
     test_unitypackage_descriptions_cover_both_packages_and_repair_mapping()
     print("ok")
