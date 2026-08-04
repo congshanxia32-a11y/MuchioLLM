@@ -514,6 +514,8 @@ finally:
 assert "相手のMuchio" in m.peer_dialogue_prompt("[Muchio] こんにちは")
 assert not m._peer_contract_hits("今日は静かだね。")
 assert m._peer_contract_hits("Alright, let's tackle this query. The user is [Muchio].")
+assert m.peer_input_is_usable("[Muchio] 今日は静かだね。")
+assert not m.peer_input_is_usable("Okay, let me try to work through this query step by step.")
 _peer_cfg_bak = dict(m.CFG)
 _peer_chat_bak = m.ollama_chat
 _peer_calls = []

@@ -2569,6 +2569,11 @@ def _peer_contract_hits(raw):
             hits.append("peer_language")
     return list(dict.fromkeys(hits))
 
+
+def peer_input_is_usable(text):
+    """Return false for a peer payload that is clearly model self-commentary."""
+    return not _peer_contract_hits(text)
+
 def ollama_chat(history, user_text, timeout=90, diversity=0):
     # 自分の過去返答は直近3件だけ文脈に入れる(お手本が多いと型に固執する)。ユーザー発言は全部入れる
     a_idx = [i for i, (r, _) in enumerate(history) if r == "assistant"]
@@ -3803,6 +3808,9 @@ def main():
             if _PEER_RELAY is not None:
                 for peer_event in _PEER_RELAY.poll():
                     if peer_event.get("turn", 0) <= 1:
+                        continue
+                    if not peer_input_is_usable(peer_event.get("text", "")):
+                        log("Muchioから受信した自己解説を会話へ入れず破棄")
                         continue
                     cid = peer_event.get("conversation_id")
                     if (cid != peer_session_id
