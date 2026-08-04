@@ -126,6 +126,21 @@ def test_settings_transfer_screen_stays_inside_workspace():
     assert parser.transfer_parent == "workspace"
 
 
+def test_startup_loading_overlay_contract_exists():
+    html = HTML.read_text(encoding="utf-8")
+    app = (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+    css = (Path(__file__).parent / "ui" / "style.css").read_text(encoding="utf-8")
+    assert 'id="startup-loading"' in html
+    assert 'role="status"' in html
+    assert 'aria-live="polite"' in html
+    assert 'id="startup-loading-retry"' in html
+    assert "function setBootstrapLoadingState" in app
+    assert "async function loadBootstrap" in app
+    assert "startup-loading-retry" in app
+    assert "#startup-loading" in css
+    assert "#startup-loading.is-ready" in css
+
+
 def test_unitypackage_descriptions_cover_both_packages_and_repair_mapping():
     html = HTML.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
@@ -147,5 +162,6 @@ if __name__ == "__main__":
     test_monologue_controls_are_bound_to_bootstrap_and_save_ui()
     test_settings_transfer_screen_has_export_and_import_controls()
     test_settings_transfer_screen_stays_inside_workspace()
+    test_startup_loading_overlay_contract_exists()
     test_unitypackage_descriptions_cover_both_packages_and_repair_mapping()
     print("ok")
