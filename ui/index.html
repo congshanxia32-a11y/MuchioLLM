@@ -19,6 +19,7 @@
 <button type="button" class="side-link" data-section="audio"><span class="side-icon">◉</span><span><b>音声と表示</b><small>耳・文字盤</small></span></button>
 <button type="button" class="side-link" data-section="integrations"><span class="side-icon">◎</span><span><b>連携と記憶</b><small>VRCX・記録</small></span></button>
 <button type="button" class="side-link" data-section="maintenance"><span class="side-icon">⚙</span><span><b>保守とログ</b><small>安全・更新</small></span></button>
+<button type="button" class="side-link" data-section="transfer"><span class="side-icon">⇄</span><span><b>設定を移す</b><small>JSON・バックアップ</small></span></button>
 </nav>
 <div class="sidebar-foot"><small>必要なところだけ開いて設定できます</small></div>
 </aside>
@@ -444,6 +445,28 @@
 </section>
 
 </div>
+<section class="card wide section-page transfer-page" data-section="transfer" id="settings-transfer">
+<div class="transfer-hero">
+<div><span class="eyebrow">MOVE SETTINGS</span><h2>設定を移す</h2><p>人格・話し方・LLM設定を、カテゴリ単位で別のMuchioへ持っていけます。</p></div>
+<div class="transfer-safety"><span>安全設計</span><small>秘密情報は書き出しません</small></div>
+</div>
+<div class="transfer-columns">
+<section class="transfer-panel">
+<div class="transfer-panel-head"><div><h3>書き出す</h3><p>選んだカテゴリを <code>muchiko-settings.json</code> に保存します。</p></div><span class="transfer-step">01</span></div>
+<div class="transfer-actions"><button type="button" class="ghost" id="settings-export-select-all">すべて選ぶ</button><button type="button" class="ghost" id="settings-export-clear">すべて外す</button></div>
+<div id="settings-export-categories" class="transfer-category-list"></div>
+<button type="button" class="primary-action transfer-submit" id="settings-export">JSONを書き出す</button>
+</section>
+<section class="transfer-panel">
+<div class="transfer-panel-head"><div><h3>読み込む</h3><p>JSONを選び、取り込むカテゴリだけを指定します。</p></div><span class="transfer-step">02</span></div>
+<label class="transfer-file"><span>設定ファイル</span><input type="file" id="settings-import-file" accept="application/json,.json"></label>
+<div class="transfer-actions"><button type="button" class="ghost" id="settings-import-select-all">すべて選ぶ</button><button type="button" class="ghost" id="settings-import-clear">すべて外す</button></div>
+<div id="settings-import-categories" class="transfer-category-list"></div>
+<button type="button" class="transfer-submit" id="settings-import">選んだ設定を読み込む</button>
+<small class="transfer-note">読み込み前に現在の設定をバックアップします。選ばなかったカテゴリは変わりません。</small>
+</section>
+</div>
+</section>
 </div>
 </main>
 

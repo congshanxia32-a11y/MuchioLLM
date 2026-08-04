@@ -213,11 +213,78 @@ function applyBootstrap(d){
   CHECK_FIELDS.forEach(k=>setField(form, k, !!cfg[k]));
   initCategoryToggles();
   initExternalToggles();
+  renderSettingsTransfer(d.setting_categories || []);
   syncAllDynamicRanges();
   form.cfg_mtime.value = d.cfg_mtime || '';
   initPresets();
   updateSetupStatus();
 }
+
+function transferSelection(prefix){
+  return Array.from(document.querySelectorAll(`[data-transfer-group="${prefix}"]:checked`))
+    .map(el=>el.dataset.transferCategory);
+}
+function setTransferSelection(prefix, checked){
+  document.querySelectorAll(`[data-transfer-group="${prefix}"]`).forEach(el=>{ el.checked = checked; });
+}
+function renderSettingsTransfer(categories){
+  const render = (targetId, prefix) => {
+    const box = $(targetId);
+    if(!box) return;
+    box.innerHTML = categories.length
+      ? categories.map(c=>`<label class="transfer-category"><input type="checkbox" data-transfer-category="${esc(c.id)}" data-transfer-group="${prefix}" checked> <span>${esc(c.label)}</span></label>`).join('')
+      : '<p class="transfer-empty">移せる設定がありません</p>';
+  };
+  render('settings-export-categories', 'export');
+  render('settings-import-categories', 'import');
+  const bind = (id, fn) => {
+    const button = $(id);
+    if(!button || button.dataset.bound) return;
+    button.dataset.bound = '1';
+    button.addEventListener('click', fn);
+  };
+  bind('settings-export-select-all', ()=>setTransferSelection('export', true));
+  bind('settings-export-clear', ()=>setTransferSelection('export', false));
+  bind('settings-import-select-all', ()=>setTransferSelection('import', true));
+  bind('settings-import-clear', ()=>setTransferSelection('import', false));
+  bind('settings-export', async ()=>{
+    const selected = transferSelection('export');
+    if(!selected.length){ toast('書き出すカテゴリをひとつ選んでください', true); return; }
+    try{
+      const r = await fetch('/settings_export?categories='+encodeURIComponent(selected.join(',')));
+      if(!r.ok) throw new Error('export');
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'muchiko-settings.json';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(()=>URL.revokeObjectURL(url), 1000);
+      toast('選んだカテゴリを書き出しました');
+    }catch(_){ toast('設定を書き出せませんでした', true); }
+  });
+  bind('settings-import', async ()=>{
+    const file = $('settings-import-file')?.files?.[0];
+    const selected = transferSelection('import');
+    if(!file){ toast('読み込むJSONファイルを選んでください', true); return; }
+    if(!selected.length){ toast('読み込むカテゴリをひとつ選んでください', true); return; }
+    if(!confirm('選んだカテゴリを読み込みます。現在の設定はバックアップされます。よろしいですか？')) return;
+    try{
+      const documentData = JSON.parse(await file.text());
+      const r = await fetch('/settings_import', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({document:documentData, categories:selected, cfg_mtime:$('cfg').cfg_mtime.value})
+      });
+      const data = await r.json();
+      if(r.status === 409){ toast('設定が別の画面で変わっています。ページを読み込み直してください', true); return; }
+      if(!r.ok || !data.ok) throw new Error(data.err || 'import');
+      await loadBootstrap();
+      loadM();
+      $('settings-import-file').value = '';
+      toast(`設定を読み込みました(${data.imported.length}項目)`);
+    }catch(e){ toast('設定を読み込めませんでした: '+(e.message || ''), true); }
+  });
+}
+
 async function loadBootstrap(){
   try{
     const d = await (await fetch('/bootstrap')).json();
@@ -307,7 +374,7 @@ gb.open = localStorage.getItem('muchio_guide') !== 'closed';
 gb.addEventListener('toggle', ()=>localStorage.setItem('muchio_guide', gb.open ? 'open' : 'closed'));
 
 // ---- シンプル/じんかく/アドバンスド タブ(選んだほうをおぼえる) ----
-const SECTION_KEYS = ['start','basic','llm','audio','integrations','maintenance'];
+const SECTION_KEYS = ['start','basic','llm','audio','integrations','maintenance','transfer'];
 const LEGACY_SECTION = {s:'start', j:'llm', a:'integrations'};
 function normalizeWorkspaceLayout(){
   const main = document.querySelector('main.app-layout');

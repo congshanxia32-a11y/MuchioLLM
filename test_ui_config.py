@@ -82,6 +82,22 @@ def test_monologue_controls_are_bound_to_bootstrap_and_save_ui():
         assert field in app, field
 
 
+def test_settings_transfer_screen_has_export_and_import_controls():
+    html = HTML.read_text(encoding="utf-8")
+    app = (Path(__file__).parent / "ui" / "app.js").read_text(encoding="utf-8")
+    assert 'data-section="transfer"' in html
+    assert 'id="settings-transfer"' in html
+    assert 'id="settings-export"' in html
+    assert 'id="settings-import"' in html
+    assert 'id="settings-import-file"' in html
+    assert 'accept="application/json,.json"' in html
+    assert "秘密情報" in html
+    assert "バックアップ" in html
+    assert "/settings_export" in app
+    assert "/settings_import" in app
+    assert "muchiko-settings.json" in app
+
+
 def test_unitypackage_descriptions_cover_both_packages_and_repair_mapping():
     html = HTML.read_text(encoding="utf-8")
     readme = README.read_text(encoding="utf-8")
@@ -101,5 +117,6 @@ if __name__ == "__main__":
     test_dynamic_settings_are_exposed_in_bootstrap_defaults()
     test_monologue_controls_are_submitted_with_main_config_form()
     test_monologue_controls_are_bound_to_bootstrap_and_save_ui()
+    test_settings_transfer_screen_has_export_and_import_controls()
     test_unitypackage_descriptions_cover_both_packages_and_repair_mapping()
     print("ok")
