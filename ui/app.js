@@ -285,15 +285,41 @@ function renderSettingsTransfer(categories){
   });
 }
 
+function setBootstrapLoadingState(state, message){
+  const overlay = $('startup-loading');
+  const messageEl = $('startup-loading-message');
+  const retry = $('startup-loading-retry');
+  if(!overlay || !messageEl || !retry) return;
+  overlay.classList.toggle('is-error', state === 'error');
+  overlay.classList.toggle('is-ready', state === 'ready');
+  messageEl.textContent = message || (state === 'error'
+    ? '設定を読み込めませんでした'
+    : 'しばらくお待ちください');
+  retry.hidden = state !== 'error';
+  retry.disabled = state === 'loading';
+  if(state === 'ready'){
+    overlay.addEventListener('transitionend', () => { overlay.hidden = true; }, {once:true});
+  }else{
+    overlay.hidden = false;
+  }
+}
+
 async function loadBootstrap(){
+  setBootstrapLoadingState('loading', '設定を読み込んでいます…');
   try{
-    const d = await (await fetch('/bootstrap')).json();
+    const response = await fetch('/bootstrap');
+    if(!response.ok) throw new Error(`HTTP ${response.status}`);
+    const d = await response.json();
     applyBootstrap(d);
     maybeStartTour();
+    setBootstrapLoadingState('ready', '読み込み完了');
   }catch(e){
+    setBootstrapLoadingState('error', '設定を読み込めませんでした。再試行してください');
     toast('設定の初期値を読み込めませんでした', true);
   }
 }
+
+$('startup-loading-retry')?.addEventListener('click', loadBootstrap);
 
 async function upd(){
   try{
