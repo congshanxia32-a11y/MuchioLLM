@@ -71,13 +71,23 @@ def pick_device(p, name_part=None, mic=False):
 
 def _add_nvidia_dlls():
     """pipで入れたcuBLAS/cuDNNのDLLをctranslate2から見えるようにする"""
-    import glob, os, site
-    for sp in site.getsitepackages():
-        for d in glob.glob(os.path.join(sp, "nvidia", "*", "bin")):
-            try:
-                os.add_dll_directory(d)
-            except OSError:
-                pass
+    import ctypes, glob, os, site
+    bins = [d for sp in site.getsitepackages()
+            for d in glob.glob(os.path.join(sp, "nvidia", "*", "bin"))]
+    for d in bins:
+        try:
+            os.add_dll_directory(d)
+        except OSError:
+            pass
+    # ctranslate2はDLL名だけのLoadLibraryで読むためadd_dll_directoryが効かない。
+    # 入口のDLLをフルパスで先に読み込んでおくと、名前だけでも解決できるようになる。
+    for d in bins:
+        for pat in ("cublas64_*.dll", "cublasLt64_*.dll", "cudnn64_*.dll"):
+            for dll in glob.glob(os.path.join(d, pat)):
+                try:
+                    ctypes.CDLL(dll)
+                except OSError:
+                    pass
 
 def make_model(mic_mode):
     """GPU(large系)を試し、だめならCPUへフォールバック"""
