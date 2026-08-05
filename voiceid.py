@@ -324,9 +324,15 @@ def embed(audio_f32_16k):
             import torch
             from speechbrain.inference.speaker import EncoderClassifier
             dev = "cuda" if torch.cuda.is_available() else "cpu"
+            opts = {}
+            try:   # 既定のsymlink取得はWindowsだと管理者/開発者モードが要る(WinError 1314)
+                from speechbrain.utils.fetching import LocalStrategy
+                opts["local_strategy"] = LocalStrategy.COPY
+            except ImportError:
+                pass
             _encoder = EncoderClassifier.from_hparams(
                 source="speechbrain/spkrec-ecapa-voxceleb",
-                savedir=str(DATA / "ecapa"), run_opts={"device": dev})
+                savedir=str(DATA / "ecapa"), run_opts={"device": dev}, **opts)
             print(time.strftime("%H:%M:%S ") + f"こえ分類 準備完了 (ecapa/{dev})", flush=True)
         except Exception as e:
             _dead = True
